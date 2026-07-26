@@ -88,8 +88,8 @@ app.get('/api/price', async (req, res) => {
 
     const searchUrl = new URL('https://api.ebay.com/buy/browse/v1/item_summary/search');
     searchUrl.searchParams.set('q', query);
-    searchUrl.searchParams.set('category_ids', CARD_CATEGORY_IDS);
     searchUrl.searchParams.set('limit', '50');
+    searchUrl.searchParams.set('filter', 'buyingOptions:{FIXED_PRICE|AUCTION|BEST_OFFER}');
 
     const searchResponse = await fetch(searchUrl, {
       headers: {
@@ -103,7 +103,21 @@ app.get('/api/price', async (req, res) => {
     }
 
     const searchData = await searchResponse.json();
-    const items = searchData.itemSummaries || [];
+    const auctionUrl = new URL('https://api.ebay.com/buy/browse/v1/item_summary/search');
+    auctionUrl.searchParams.set('q', query);
+    auctionUrl.searchParams.set('limit', '20');
+    auctionUrl.searchParams.set('filter', 'buyingOptions:{AUCTION}');
+    let auctionItems = [];
+    try {
+      const ar = await fetch(auctionUrl, { headers: { Authorization: `Bearer ${token}`, 'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US' } });
+      if (ar.ok) auctionItems = (await ar.json()).itemSummaries || [];
+    } catch (e) {}
+    const seen = new Set();
+    const items = [...(searchData.itemSummaries || []), ...auctionItems].filter(function(i){
+      if (seen.has(i.itemId)) return false;
+      seen.add(i.itemId);
+      return true;
+    });
 
     const buckets = { raw: [], psa8: [], psa9: [], psa10: [] };
     const listings = [];
@@ -115,6 +129,8 @@ app.get('/api/price', async (req, res) => {
       buckets[bucketForTitle(item.title)].push(price);
 
       listings.push({
+        type: (item.buyingOptions || []).includes('AUCTION') ? 'Auction' : 'Buy It Now',
+        bids: item.bidCount || 0,
         date: formatDate(item.itemCreationDate),
         price: `$${Math.round(price)}`,
         title: item.title,
@@ -125,7 +141,12 @@ app.get('/api/price', async (req, res) => {
     }
 
     listings.sort((a, b) => (a._sortDate < b._sortDate ? 1 : -1));
-    const recentSales = listings.slice(0, 10).map(({ _sortDate, ...rest }) => rest);
+    const auctionListings = listings.filter((l) => l.type === 'Auction');
+    const buyNowListings = listings.filter((l) => l.type !== 'Auction');
+    console.log('auction listings found:', auctionListings.length);
+    const mixed = [...auctionListings.slice(0, 4), ...buyNowListings].slice(0, 10);
+    mixed.sort((a, b) => (a._sortDate < b._sortDate ? 1 : -1));
+    const recentSales = mixed.map(({ _sortDate, ...rest }) => rest);
 
     res.json({
       validResults: buckets.raw.length + buckets.psa8.length + buckets.psa9.length + buckets.psa10.length,

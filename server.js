@@ -76,6 +76,8 @@ function average(numbers) {
   return Math.round(sum / numbers.length);
 }
 
+app.use(require('express').static('public'));
+
 app.get('/api/price', async (req, res) => {
   const query = req.query.q;
 
@@ -120,6 +122,7 @@ app.get('/api/price', async (req, res) => {
     });
 
     const buckets = { raw: [], psa8: [], psa9: [], psa10: [] };
+    const compsArr = [];
     const listings = [];
 
     for (const item of items) {
@@ -127,6 +130,7 @@ app.get('/api/price', async (req, res) => {
       if (!item.title || Number.isNaN(price)) continue;
 
       buckets[bucketForTitle(item.title)].push(price);
+      compsArr.push({ t: item.title, p: Math.round(price) });
 
       listings.push({
         type: (item.buyingOptions || []).includes('AUCTION') ? 'Auction' : 'Buy It Now',
@@ -158,6 +162,7 @@ app.get('/api/price', async (req, res) => {
         psa10: { avg: average(buckets.psa10) },
       },
       recentSales,
+      comps: compsArr,
     });
   } catch (err) {
     console.error('eBay price lookup failed:', err.message);

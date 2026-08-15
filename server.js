@@ -94,6 +94,30 @@ function titleHasCardNumber(title) {
   return CARD_NUMBER_PATTERN.test(title);
 }
 
+// eBay's Browse API only accepts ONE category_ids value per request
+// (allowedMaxCategories: 1), so covering all three card categories means
+// firing one request per category and merging the results ourselves.
+function buildSearchUrl(query, categoryId, filter, limit) {
+  const url = new URL('https://api.ebay.com/buy/browse/v1/item_summary/search');
+  url.searchParams.set('q', query);
+  url.searchParams.set('category_ids', categoryId);
+  url.searchParams.set('limit', String(limit));
+  url.searchParams.set('filter', filter);
+  return url;
+}
+
+async function fetchItems(url, headers, label) {
+  try {
+    const r = await fetch(url, { headers });
+    if (r.ok) return { ok: true, items: (await r.json()).itemSummaries || [] };
+    console.error(`${label} failed: ${r.status} - ${await r.text().catch(() => '')}`);
+    return { ok: false, items: [] };
+  } catch (e) {
+    console.error(`${label} errored:`, e.message);
+    return { ok: false, items: [] };
+  }
+}
+
 app.use(require('express').static('public'));
 
 app.get('/api/price', async (req, res) => {
@@ -106,48 +130,38 @@ app.get('/api/price', async (req, res) => {
   try {
     const token = await getEbayToken();
 
-    const searchUrl = new URL('https://api.ebay.com/buy/browse/v1/item_summary/search');
-    searchUrl.searchParams.set('q', query);
-    searchUrl.searchParams.set('category_ids', CARD_CATEGORY_IDS);
-    searchUrl.searchParams.set('limit', '50');
-    searchUrl.searchParams.set('filter', 'buyingOptions:{FIXED_PRICE|AUCTION|BEST_OFFER}');
-
-    const auctionUrl = new URL('https://api.ebay.com/buy/browse/v1/item_summary/search');
-    auctionUrl.searchParams.set('q', query);
-    auctionUrl.searchParams.set('category_ids', CARD_CATEGORY_IDS);
-    auctionUrl.searchParams.set('limit', '20');
-    auctionUrl.searchParams.set('filter', 'buyingOptions:{AUCTION}');
-
     const ebayHeaders = {
       Authorization: `Bearer ${token}`,
       'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US',
     };
 
-    // Run both eBay calls at the same time instead of one after another,
-    // so a search doesn't take twice as long as it needs to.
-    const [searchResponse, auctionItems] = await Promise.all([
-      fetch(searchUrl, { headers: ebayHeaders }),
-      fetch(auctionUrl, { headers: ebayHeaders })
-        .then(async (r) => {
-          if (r.ok) return (await r.json()).itemSummaries || [];
-          console.error(`eBay auction search failed: ${r.status} - ${await r.text().catch(() => '')}`);
-          return [];
-        })
-        .catch((e) => {
-          console.error('eBay auction search errored:', e.message);
-          return [];
-        }),
+    const categoryIds = CARD_CATEGORY_IDS.split(',');
+
+    // Run every category's main search and auction search at the same time
+    // instead of one after another, so this doesn't take 6x as long.
+    const [mainResults, auctionResults] = await Promise.all([
+      Promise.all(categoryIds.map((catId) =>
+        fetchItems(
+          buildSearchUrl(query, catId, 'buyingOptions:{FIXED_PRICE|AUCTION|BEST_OFFER}', 30),
+          ebayHeaders,
+          `eBay search (category ${catId})`
+        )
+      )),
+      Promise.all(categoryIds.map((catId) =>
+        fetchItems(
+          buildSearchUrl(query, catId, 'buyingOptions:{AUCTION}', 10),
+          ebayHeaders,
+          `eBay auction search (category ${catId})`
+        )
+      )),
     ]);
 
-    if (!searchResponse.ok) {
-      const body = await searchResponse.text().catch(() => '');
-      console.error(`eBay search failed: ${searchResponse.status} - ${body}`);
-      throw new Error(`eBay search failed: ${searchResponse.status}`);
+    if (!mainResults.some((r) => r.ok)) {
+      throw new Error('eBay search failed for every card category');
     }
 
-    const searchData = await searchResponse.json();
     const seen = new Set();
-    const items = [...(searchData.itemSummaries || []), ...auctionItems].filter(function(i){
+    const items = [...mainResults, ...auctionResults].flatMap((r) => r.items).filter(function(i){
       if (seen.has(i.itemId)) return false;
       seen.add(i.itemId);
       return true;

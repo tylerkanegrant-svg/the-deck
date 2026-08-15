@@ -1795,7 +1795,7 @@ function scanFiles(files,mode){
       if(run!==_scanRun)return;
       _scanRun++;
       scanFailed(mode);
-    },7000);
+    },20000);
   }
   armWatchdog();
 
@@ -1876,8 +1876,24 @@ function scanFiles(files,mode){
   });
 }
 
-// Preload the scanner in the background so the first scan is fast
-setTimeout(function(){loadTesseract(function(){});},4000);
+// Preload the scanner in the background so the first real scan is fast.
+// Loading the tesseract.min.js wrapper alone isn't enough - the OCR
+// worker, WASM engine and language data (several MB) only get fetched on
+// the first real recognize() call. Run one here against a throwaway
+// 1x1 canvas so all of that is downloaded and cached before the user
+// ever taps "Read Card".
+function warmTesseract(){
+  loadTesseract(function(err){
+    if(err||!window.Tesseract)return;
+    var cv=document.createElement('canvas');
+    cv.width=1;cv.height=1;
+    Tesseract.recognize(cv,'eng',{
+      workerPath:'https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/5.1.0/worker.min.js',
+      corePath:'https://cdnjs.cloudflare.com/ajax/libs/tesseract.js-core/5.1.0/tesseract-core-simd.wasm.js'
+    }).catch(function(){});
+  });
+}
+setTimeout(warmTesseract,4000);
 
 function scanFailed(mode){
   // In the Claude preview the scanner brain files are blocked - show the demo flow there
@@ -1894,8 +1910,15 @@ function scanFailed(mode){
   var el=scanStatusEl(mode);
   if(!el)return;
   el.style.display='block';
-  el.innerHTML='Could not read that one. '
-    +'<button onclick="document.getElementById(\''+(mode==='listing'?'scanInputList':'scanInput')+'\').click()" style="background:none;border:none;color:var(--gold);text-decoration:underline;font-family:inherit;font-size:inherit;cursor:pointer;padding:0">Try again</button>'
+  // 'search' mode uses the guided front/back panel - the photos are still
+  // sitting there, so retry should just re-run OCR on them, not pop a
+  // different (invisible) file picker. 'listing' mode has no guided panel,
+  // so retry re-opens its single file picker.
+  var retryAction=mode==='listing'
+    ?"document.getElementById('scanInputList').click()"
+    :"runGuidedScan()";
+  el.innerHTML='Could not read that one clearly. Good lighting and getting close so the text is sharp both help. '
+    +'<button onclick="'+retryAction+'" style="background:none;border:none;color:var(--gold);text-decoration:underline;font-family:inherit;font-size:inherit;cursor:pointer;padding:0">Try again</button>'
     +' or '
     +'<button onclick="setScanStatus(\''+mode+'\',\'\');var b=document.getElementById(\''+(mode==='listing'?'lName':'cardQ')+'\');if(b)b.focus();" style="background:none;border:none;color:var(--gold);text-decoration:underline;font-family:inherit;font-size:inherit;cursor:pointer;padding:0">type it instead</button>';
 }

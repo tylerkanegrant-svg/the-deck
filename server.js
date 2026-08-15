@@ -101,6 +101,7 @@ app.get('/api/price', async (req, res) => {
 
     const searchUrl = new URL('https://api.ebay.com/buy/browse/v1/item_summary/search');
     searchUrl.searchParams.set('q', query);
+    searchUrl.searchParams.set('category_ids', CARD_CATEGORY_IDS);
     searchUrl.searchParams.set('limit', '50');
     searchUrl.searchParams.set('filter', 'buyingOptions:{FIXED_PRICE|AUCTION|BEST_OFFER}');
 
@@ -118,6 +119,7 @@ app.get('/api/price', async (req, res) => {
     const searchData = await searchResponse.json();
     const auctionUrl = new URL('https://api.ebay.com/buy/browse/v1/item_summary/search');
     auctionUrl.searchParams.set('q', query);
+    auctionUrl.searchParams.set('category_ids', CARD_CATEGORY_IDS);
     auctionUrl.searchParams.set('limit', '20');
     auctionUrl.searchParams.set('filter', 'buyingOptions:{AUCTION}');
     let auctionItems = [];

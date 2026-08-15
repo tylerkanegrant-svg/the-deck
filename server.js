@@ -24,7 +24,9 @@ async function getEbayToken() {
   const clientSecret = process.env.EBAY_CLIENT_SECRET;
 
   if (!clientId || !clientSecret) {
-    throw new Error('Missing eBay credentials');
+    const err = new Error('Missing eBay credentials (EBAY_CLIENT_ID / EBAY_CLIENT_SECRET not set)');
+    err.code = 'missing_credentials';
+    throw err;
   }
 
   const credentials = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
@@ -42,7 +44,10 @@ async function getEbayToken() {
   });
 
   if (!response.ok) {
-    throw new Error(`eBay token request failed: ${response.status}`);
+    const err = new Error(`eBay token request failed: ${response.status}`);
+    // eBay returns 401 for a bad/expired/wrong-environment client id or secret.
+    err.code = response.status === 401 ? 'invalid_credentials' : 'ebay_unavailable';
+    throw err;
   }
 
   const data = await response.json();
@@ -188,7 +193,7 @@ app.get('/api/price', async (req, res) => {
     });
   } catch (err) {
     console.error('eBay price lookup failed:', err.message);
-    res.json({ error: 'ebay_unavailable' });
+    res.json({ error: err.code || 'ebay_unavailable' });
   }
 });
 

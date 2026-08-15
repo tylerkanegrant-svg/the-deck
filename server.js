@@ -76,6 +76,17 @@ function average(numbers) {
   return Math.round(sum / numbers.length);
 }
 
+const CARD_NUMBER_PATTERN = /\/\s*\d+/;
+const MIN_VALID_PRICE = 5;
+
+function isNumberedCardQuery(query) {
+  return CARD_NUMBER_PATTERN.test(query);
+}
+
+function titleHasCardNumber(title) {
+  return CARD_NUMBER_PATTERN.test(title);
+}
+
 app.use(require('express').static('public'));
 
 app.get('/api/price', async (req, res) => {
@@ -121,6 +132,8 @@ app.get('/api/price', async (req, res) => {
       return true;
     });
 
+    const wantsNumberedCard = isNumberedCardQuery(query);
+
     const buckets = { raw: [], psa8: [], psa9: [], psa10: [] };
     const compsArr = [];
     const listings = [];
@@ -128,9 +141,12 @@ app.get('/api/price', async (req, res) => {
     for (const item of items) {
       const price = item.price && parseFloat(item.price.value);
       if (!item.title || Number.isNaN(price)) continue;
+      if (price < MIN_VALID_PRICE) continue;
+      if (wantsNumberedCard && !titleHasCardNumber(item.title)) continue;
 
-      buckets[bucketForTitle(item.title)].push(price);
-      compsArr.push({ t: item.title, p: Math.round(price) });
+      const grade = bucketForTitle(item.title);
+      buckets[grade].push(price);
+      compsArr.push({ t: item.title, p: Math.round(price), grade });
 
       listings.push({
         type: (item.buyingOptions || []).includes('AUCTION') ? 'Auction' : 'Buy It Now',

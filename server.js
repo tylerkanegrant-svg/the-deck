@@ -44,6 +44,8 @@ async function getEbayToken() {
   });
 
   if (!response.ok) {
+    const body = await response.text().catch(() => '');
+    console.error(`eBay token request failed: ${response.status} - ${body}`);
     const err = new Error(`eBay token request failed: ${response.status}`);
     // eBay returns 401 for a bad/expired/wrong-environment client id or secret.
     err.code = response.status === 401 ? 'invalid_credentials' : 'ebay_unavailable';
@@ -126,12 +128,20 @@ app.get('/api/price', async (req, res) => {
     const [searchResponse, auctionItems] = await Promise.all([
       fetch(searchUrl, { headers: ebayHeaders }),
       fetch(auctionUrl, { headers: ebayHeaders })
-        .then((r) => (r.ok ? r.json() : { itemSummaries: [] }))
-        .then((d) => d.itemSummaries || [])
-        .catch(() => []),
+        .then(async (r) => {
+          if (r.ok) return (await r.json()).itemSummaries || [];
+          console.error(`eBay auction search failed: ${r.status} - ${await r.text().catch(() => '')}`);
+          return [];
+        })
+        .catch((e) => {
+          console.error('eBay auction search errored:', e.message);
+          return [];
+        }),
     ]);
 
     if (!searchResponse.ok) {
+      const body = await searchResponse.text().catch(() => '');
+      console.error(`eBay search failed: ${searchResponse.status} - ${body}`);
       throw new Error(`eBay search failed: ${searchResponse.status}`);
     }
 

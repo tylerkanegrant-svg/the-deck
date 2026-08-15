@@ -2204,7 +2204,7 @@ function simplifyQuery(q){
 
 async function fetchPrices(q){
   try{
-    var r=await fetch(((location.protocol==="http:"||location.protocol==="https:")?"":"http://localhost:3001")+"/api/price?q="+encodeURIComponent(q),{signal:AbortSignal.timeout(5000)});
+    var r=await fetch(((location.protocol==="http:"||location.protocol==="https:")?"":"http://localhost:3001")+"/api/price?q="+encodeURIComponent(q),{signal:AbortSignal.timeout(20000)});
     return await r.json();
   }catch(e){return null;}
 }

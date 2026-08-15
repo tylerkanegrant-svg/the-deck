@@ -105,28 +105,32 @@ app.get('/api/price', async (req, res) => {
     searchUrl.searchParams.set('limit', '50');
     searchUrl.searchParams.set('filter', 'buyingOptions:{FIXED_PRICE|AUCTION|BEST_OFFER}');
 
-    const searchResponse = await fetch(searchUrl, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US',
-      },
-    });
+    const auctionUrl = new URL('https://api.ebay.com/buy/browse/v1/item_summary/search');
+    auctionUrl.searchParams.set('q', query);
+    auctionUrl.searchParams.set('category_ids', CARD_CATEGORY_IDS);
+    auctionUrl.searchParams.set('limit', '20');
+    auctionUrl.searchParams.set('filter', 'buyingOptions:{AUCTION}');
+
+    const ebayHeaders = {
+      Authorization: `Bearer ${token}`,
+      'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US',
+    };
+
+    // Run both eBay calls at the same time instead of one after another,
+    // so a search doesn't take twice as long as it needs to.
+    const [searchResponse, auctionItems] = await Promise.all([
+      fetch(searchUrl, { headers: ebayHeaders }),
+      fetch(auctionUrl, { headers: ebayHeaders })
+        .then((r) => (r.ok ? r.json() : { itemSummaries: [] }))
+        .then((d) => d.itemSummaries || [])
+        .catch(() => []),
+    ]);
 
     if (!searchResponse.ok) {
       throw new Error(`eBay search failed: ${searchResponse.status}`);
     }
 
     const searchData = await searchResponse.json();
-    const auctionUrl = new URL('https://api.ebay.com/buy/browse/v1/item_summary/search');
-    auctionUrl.searchParams.set('q', query);
-    auctionUrl.searchParams.set('category_ids', CARD_CATEGORY_IDS);
-    auctionUrl.searchParams.set('limit', '20');
-    auctionUrl.searchParams.set('filter', 'buyingOptions:{AUCTION}');
-    let auctionItems = [];
-    try {
-      const ar = await fetch(auctionUrl, { headers: { Authorization: `Bearer ${token}`, 'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US' } });
-      if (ar.ok) auctionItems = (await ar.json()).itemSummaries || [];
-    } catch (e) {}
     const seen = new Set();
     const items = [...(searchData.itemSummaries || []), ...auctionItems].filter(function(i){
       if (seen.has(i.itemId)) return false;

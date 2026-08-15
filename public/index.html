@@ -2240,10 +2240,10 @@ async function doSearch(){
     } else if(data&&data.stats&&!data.error){
       renderNoResults(q);
     } else {
-      renderDemo(q);
+      renderError(q,data);
     }
   }catch(e){
-    try{renderDemo(q);}catch(e2){}
+    try{renderError(q,null);}catch(e2){}
   }finally{
     document.getElementById("pbar").style.display="none";
     document.getElementById("sBtn").disabled=false;document.getElementById("sBtn").textContent="Search";
@@ -2265,32 +2265,17 @@ function fch(){var c=["-3.2%","+5.1%","+8.4%","-1.2%","+12.3%","+2.8%"];return c
 function gpH(g){if(!g)return"<span class='gp gpraw'>Raw</span>";if(/psa.?10/i.test(g))return"<span class='gp gp10'>"+g+"</span>";if(/psa.?9[^0]/i.test(g)||g==="PSA 9")return"<span class='gp gp9'>"+g+"</span>";if(/psa.?8/i.test(g))return"<span class='gp gp8'>"+g+"</span>";return"<span class='gp gpraw'>"+g+"</span>";}
 function mkLine(avg,col){var b=avg||100,pts=[];for(var i=0;i<10;i++)pts.push(i===9?b:Math.max(0,b+(Math.sin(i*1.3+b*0.01)*0.18+Math.cos(i*0.7)*0.1)*b));var mn=Math.min.apply(null,pts),mx=Math.max.apply(null,pts)||1;var n=pts.map(function(p){return((p-mn)/(mx-mn||1))*32+4;});var w=100/(pts.length-1);var path=pts.map(function(_,i){return(i===0?"M":"L")+(i*w).toFixed(1)+","+(40-n[i]).toFixed(1);}).join(" ");var area=path+" L"+((pts.length-1)*w).toFixed(1)+",40 L0,40 Z";var gid="g"+Math.random().toString(36).slice(2,7);return"<svg class='lsvg' viewBox='0 0 100 44' preserveAspectRatio='none'><defs><linearGradient id='"+gid+"' x1='0' y1='0' x2='0' y2='1'><stop offset='0%' stop-color='"+col+"' stop-opacity='0.22'/><stop offset='100%' stop-color='"+col+"' stop-opacity='0'/></linearGradient></defs><path d='"+area+"' fill='url(#"+gid+")'/><path d='"+path+"' fill='none' stroke='"+col+"' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/><circle cx='"+((pts.length-1)*w).toFixed(1)+"' cy='"+(40-n[9]).toFixed(1)+"' r='2' fill='"+col+"'/></svg>";}
 
-function renderDemo(q){
-  var ql=q.toLowerCase(),base=50;
-  if(ql.indexOf("charizard")>-1)base=ql.indexOf("1st")>-1?15000:ql.indexOf("vmax")>-1?800:500;
-  else if(ql.indexOf("jordan")>-1)base=25000;
-  else if(ql.indexOf("lebron")>-1)base=3000;
-  else if(ql.indexOf("lamelo")>-1)base=2000;
-  else if(ql.indexOf("pikachu")>-1)base=ql.indexOf("illustrator")>-1?200000:80;
-  else if(ql.indexOf("black lotus")>-1)base=50000;
-  else if(ql.indexOf("wembanyama")>-1||ql.indexOf("wemby")>-1)base=1500;
-  else if(ql.indexOf("mahomes")>-1)base=1200;
-  else if(ql.indexOf("brady")>-1)base=2500;
-  var rnd=function(n,p){return Math.round(n*(1+(Math.random()-0.4)*p));};
-  var fmtP=function(n){return"$"+Math.round(n).toLocaleString();};
-  var p={name:q.split(" ").map(function(w){return w.charAt(0).toUpperCase()+w.slice(1);}).join(" "),set:"Demo \u2014 start backend for live eBay prices",emoji:ql.indexOf("charizard")>-1||ql.indexOf("pikachu")>-1?"&#9889;":ql.indexOf("jordan")>-1||ql.indexOf("lamelo")>-1||ql.indexOf("lebron")>-1?"&#127944;":"&#127183;",prices:{raw:fmtP(base),psa8:fmtP(rnd(base*2.2,0.3)),psa9:fmtP(rnd(base*3.5,0.3)),psa10:fmtP(rnd(base*7,0.4))},changes:{raw:"+8.4%",psa8:"+12.1%",psa9:"+15.3%",psa10:"+22.7%"},recentSales:[
-    {date:"Jul 6, 2026",grade:"PSA 10",platform:"eBay",price:fmtP(rnd(base*7,0.15)),type:"Auction",bids:22},
-    {date:"Jul 3, 2026",grade:"PSA 9",platform:"eBay",price:fmtP(rnd(base*3.5,0.15)),type:"Fixed Price",bids:0},
-    {date:"Jun 29, 2026",grade:"PSA 10",platform:"PWCC",price:fmtP(rnd(base*7,0.2)),type:"Auction",bids:31},
-    {date:"Jun 25, 2026",grade:"PSA 9",platform:"eBay",price:fmtP(rnd(base*3.5,0.2)),type:"Auction",bids:14},
-    {date:"Jun 21, 2026",grade:"PSA 9",platform:"Goldin",price:fmtP(rnd(base*3.5,0.25)),type:"Fixed Price",bids:0},
-    {date:"Jun 17, 2026",grade:"PSA 10",platform:"eBay",price:fmtP(rnd(base*7,0.25)),type:"Fixed Price",bids:0},
-    {date:"Jun 12, 2026",grade:"PSA 8",platform:"eBay",price:fmtP(rnd(base*2.2,0.2)),type:"Auction",bids:9},
-    {date:"Jun 8, 2026",grade:"PSA 9",platform:"eBay",price:fmtP(rnd(base*3.5,0.3)),type:"Auction",bids:17},
-    {date:"Jun 3, 2026",grade:"Raw",platform:"eBay",price:fmtP(rnd(base,0.2)),type:"Fixed Price",bids:0},
-    {date:"May 30, 2026",grade:"PSA 10",platform:"Goldin",price:fmtP(rnd(base*7,0.3)),type:"Auction",bids:40}
-  ],note:"Demo prices \u2014 connect backend for real eBay data",isDemo:true};
-  renderPrice(p);
+function renderError(q,data){
+  var reason=(data&&data.error)
+    ?"The backend server responded, but it couldn't get prices from eBay. Check that EBAY_CLIENT_ID and EBAY_CLIENT_SECRET are set correctly in its .env file."
+    :"Couldn't reach the backend server. Make sure it's running (npm start) and that this page can reach it.";
+  document.getElementById("sResult").innerHTML='<div style="background:var(--s1);border:1px solid var(--border);border-radius:12px;padding:32px 20px;text-align:center">'
+    +'<div style="font-size:36px;opacity:0.15;margin-bottom:10px">&#9888;&#65039;</div>'
+    +'<div style="font-size:14px;font-weight:700;margin-bottom:6px">Couldn\u2019t load live prices</div>'
+    +'<div style="font-size:12px;color:var(--gray-lt);line-height:1.6;margin-bottom:16px">'+reason+'</div>'
+    +'<button onclick="doSearch()" style="background:var(--gold);color:#000;border:none;padding:11px 20px;border-radius:8px;font-family:DM Sans,sans-serif;font-size:12px;font-weight:800;cursor:pointer">Try Again</button>'
+    +'</div>';
+  document.getElementById("sResult").style.display="block";
 }
 function renderEbay(q,data,originalQ){
   var s=data.stats;

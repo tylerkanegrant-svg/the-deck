@@ -826,7 +826,9 @@ function initLeafletMap(){
     <input type="file" id="scanFrontIn" accept="image/*" style="display:none" onchange="guidedChosen('front',this)">
     <input type="file" id="scanBackIn" accept="image/*" style="display:none" onchange="guidedChosen('back',this)">
     <input type="file" id="scanInput" accept="image/*" multiple style="display:none" onchange="scanCard(this,'search')">
-    <button id="scanToggleBtn" onclick="toggleScanPanel()" style="width:100%;padding:13px;background:transparent;border:1.5px dashed rgba(201,168,76,0.4);color:var(--gold);font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;cursor:pointer;border-radius:var(--radius-sm);margin-bottom:8px;-webkit-tap-highlight-color:transparent">&#128247; Scan a Card Instead</button>
+    <button id="scanToggleBtn" onclick="toggleScanPanel()" style="width:100%;padding:13px;background:transparent;border:1.5px dashed rgba(201,168,76,0.4);color:var(--gold);font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;cursor:pointer;border-radius:var(--radius-sm);margin-bottom:8px;-webkit-tap-highlight-color:transparent">&#128247; Scan Slab Label</button>
+    <div style="font-size:10px;color:var(--gray);line-height:1.5;margin-bottom:6px">Works best on graded slabs (PSA, BGS, SGC) &mdash; scan the printed label.</div>
+    <div style="display:inline-block;margin-bottom:10px;padding:3px 9px;border:1px solid rgba(255,255,255,0.15);border-radius:20px;font-size:9px;font-family:'DM Mono',monospace;color:var(--gray-lt);letter-spacing:0.04em"><span style="color:var(--gold)">&#9679;</span>&nbsp;Raw card photo recognition &mdash; coming soon</div>
 
     <div id="scanPanel" style="display:none;background:var(--s1);border:1px solid rgba(201,168,76,0.25);border-radius:12px;padding:14px;margin-bottom:12px">
       <div style="font-size:9px;font-family:'DM Mono',monospace;color:var(--gold);letter-spacing:0.12em;text-transform:uppercase;margin-bottom:10px">Scan both sides for the best match</div>
@@ -970,6 +972,8 @@ function initLeafletMap(){
             <input id="lCert" placeholder="Slab cert number (e.g. 71283944)" style="margin-bottom:6px">
             <input type="file" id="scanInputList" accept="image/*" multiple style="display:none" onchange="scanCard(this,'listing')">
             <button onclick="document.getElementById('scanInputList').click()" style="width:100%;padding:11px;background:transparent;border:1.5px dashed rgba(201,168,76,0.4);color:var(--gold);font-family:'DM Sans',sans-serif;font-size:12px;font-weight:600;cursor:pointer;border-radius:8px;margin-bottom:6px;-webkit-tap-highlight-color:transparent">&#128247; Scan Slab to Auto-Fill</button>
+            <div style="font-size:10px;color:var(--gray);line-height:1.5;margin-bottom:6px">Works best on graded slabs (PSA, BGS, SGC) &mdash; scan the printed label.</div>
+            <div style="display:inline-block;margin-bottom:10px;padding:3px 9px;border:1px solid rgba(255,255,255,0.15);border-radius:20px;font-size:9px;font-family:'DM Mono',monospace;color:var(--gray-lt);letter-spacing:0.04em"><span style="color:var(--gold)">&#9679;</span>&nbsp;Raw card photo recognition &mdash; coming soon</div>
             <div id="scanStatusList" style="display:none;font-size:11px;color:var(--gold);font-family:'DM Mono',monospace;text-align:center;margin-bottom:6px"></div>
             <div style="font-size:10px;color:var(--gray);line-height:1.5">&#128274; Graded slabs only. We verify your cert number on the grader's public registry - no fakes, no raw cards.</div>
           </div>
@@ -1930,7 +1934,15 @@ function scanFailed(mode,reason){
   // exact failure reason on screen means it can just be copied and sent
   // straight back for a real fix instead of guessing blind.
   var debugLine=reason?('<div style="margin-top:8px;font-size:10px;color:var(--gray);opacity:0.7">Debug: '+reason.replace(/[<>]/g,'')+'</div>'):'';
-  el.innerHTML='Could not read that one clearly. Good lighting and getting close so the text is sharp both help. '
+  // OCR ran fine but found no usable card fields - this is almost always a
+  // raw card (no printed slab label to read), not a broken scanner, so the
+  // message steers people toward what actually works instead of implying
+  // something's wrong.
+  var noFieldsFound=reason&&reason.indexOf('no usable fields')===0;
+  var friendlyMsg=noFieldsFound
+    ?"I couldn't read that. Slab labels scan best - for raw cards, type the name instead. "
+    :"Could not read that one clearly. Good lighting and getting close so the text is sharp both help. ";
+  el.innerHTML=friendlyMsg
     +'<button onclick="'+retryAction+'" style="background:none;border:none;color:var(--gold);text-decoration:underline;font-family:inherit;font-size:inherit;cursor:pointer;padding:0">Try again</button>'
     +' or '
     +'<button onclick="setScanStatus(\''+mode+'\',\'\');var b=document.getElementById(\''+(mode==='listing'?'lName':'cardQ')+'\');if(b)b.focus();" style="background:none;border:none;color:var(--gold);text-decoration:underline;font-family:inherit;font-size:inherit;cursor:pointer;padding:0">type it instead</button>'

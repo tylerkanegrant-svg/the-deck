@@ -1922,6 +1922,13 @@ function scanFailed(mode,reason){
   var el=scanStatusEl(mode);
   if(!el)return;
   el.style.display='block';
+  // A failed scan must never leave OCR text sitting in the search box -
+  // only a real typed search or a genuinely successful scan should end up
+  // there (and later in Recent Searches).
+  if(mode==='search'){
+    var qBox=document.getElementById('cardQ');
+    if(qBox)qBox.value='';
+  }
   // 'search' mode uses the guided front/back panel - the photos are still
   // sitting there, so retry should just re-run OCR on them, not pop a
   // different (invisible) file picker. 'listing' mode has no guided panel,
@@ -1977,12 +1984,28 @@ function handleScanResult(text,mode){
   var certM=text.match(/\b(\d{7,10})\b/);
   if(certM)cert=certM[1];
 
-  // Name: longest mostly-letters line that is not a grade line
+  // Reject sentence-like text (flavor text, background art misreads on raw
+  // cards) so it never gets treated as a card name - card names/titles are
+  // short and don't read like prose.
+  var NAME_STOPWORDS=['i','me','my','myself','we','our','ours','ourselves','you','your','yours','yourself','yourselves','he','him','his','himself','she','her','hers','herself','it','its','itself','they','them','their','theirs','themselves','what','which','who','whom','this','that','these','those','am','is','are','was','were','be','been','being','have','has','had','having','do','does','did','doing','a','an','the','and','but','if','or','because','as','until','while','of','at','by','for','with','about','against','between','into','through','during','before','after','above','below','to','from','up','down','in','out','on','off','over','under','again','further','then','once','here','there','when','where','why','how','all','any','both','each','few','more','most','other','some','such','no','nor','not','only','own','same','so','than','too','very','can','will','just','should','now','whatever','whoever','wants','want','wanted'];
+  function looksLikeCardName(l){
+    var words=l.split(/\s+/).filter(Boolean);
+    if(!words.length||words.length>6)return false;
+    var stopCount=0;
+    words.forEach(function(w){
+      if(NAME_STOPWORDS.indexOf(w.replace(/[^a-z]/gi,'').toLowerCase())>-1)stopCount++;
+    });
+    return stopCount<2;
+  }
+
+  // Name: longest mostly-letters line that is not a grade line and
+  // actually looks like a name rather than a sentence
   var name='';
   var best=0;
   lines.forEach(function(l){
     if(/^(PSA|BGS|SGC|CGC|GEM|MINT|NM)/i.test(l))return;
     if(/^\d+$/.test(l))return;
+    if(!looksLikeCardName(l))return;
     var letters=(l.match(/[a-zA-Z]/g)||[]).length;
     if(letters>best&&letters>=4){best=letters;name=l;}
   });

@@ -1,11 +1,72 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const crypto = require('crypto');
+const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
+const { db, uniqueReferralCode } = require('./db');
 
 const app = express();
 const PORT = 3001;
 
 app.use(cors());
+app.use(express.json());
+
+// Secret used to sign login session tokens (JWTs). Set JWT_SECRET in your
+// .env for real use - without it we generate a random one on every
+// restart, which means everyone gets logged out each time the server
+// restarts (fine for testing, not for production).
+const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex');
+if (!process.env.JWT_SECRET) {
+  console.warn('WARNING: JWT_SECRET is not set in .env - using a temporary random secret. Everyone will be logged out whenever this server restarts. Set JWT_SECRET for real use.');
+}
+
+// The one and only account allowed to see the admin dashboard.
+const ADMIN_EMAIL = 'admin@thedeck.com';
+
+const VALID_FEATURES = ['grading', 'valuing', 'auction', 'search'];
+// Free plan (or an expired trial) can only use these two features, and
+// only up to FREE_WEEKLY_LIMIT total uses of them per rolling 7 days.
+const FREE_ALLOWED_FEATURES = ['grading', 'valuing'];
+const FREE_WEEKLY_LIMIT = 10;
+
+function signToken(user) {
+  return jwt.sign({ userId: user.id, email: user.email }, JWT_SECRET, { expiresIn: '30d' });
+}
+
+// Reads the "Authorization: Bearer <token>" header, verifies it, and
+// attaches the logged-in user's id/email to the request.
+function requireAuth(req, res, next) {
+  const header = req.headers.authorization || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+  if (!token) return res.status(401).json({ error: 'unauthorized' });
+  try {
+    const payload = jwt.verify(token, JWT_SECRET);
+    req.userId = payload.userId;
+    req.userEmail = payload.email;
+    next();
+  } catch (e) {
+    res.status(401).json({ error: 'unauthorized' });
+  }
+}
+
+// Must run after requireAuth (needs req.userEmail already set).
+function requireAdmin(req, res, next) {
+  if (req.userEmail !== ADMIN_EMAIL) {
+    return res.status(403).json({ error: 'forbidden' });
+  }
+  next();
+}
+
+// 'pro' -> unlimited. 'trial' -> unlimited until trial_ends_at passes.
+// Everything else (including an expired trial) is treated as 'free'.
+function effectivePlan(user) {
+  if (user.plan === 'pro') return 'pro';
+  if (user.plan === 'trial' && user.trial_ends_at && new Date(user.trial_ends_at) > new Date()) {
+    return 'trial';
+  }
+  return 'free';
+}
 
 // Category IDs on eBay that cover trading cards (sports + non-sport + TCG singles)
 const CARD_CATEGORY_IDS = '212,2536,183454';
@@ -119,6 +180,183 @@ async function fetchItems(url, headers, label) {
 }
 
 app.use(require('express').static('public'));
+
+// ===== ACCOUNTS =====
+
+app.post('/api/signup', async (req, res) => {
+  const { email, password, ref } = req.body || {};
+
+  if (!email || typeof email !== 'string' || !email.includes('@')) {
+    return res.status(400).json({ error: 'invalid_email' });
+  }
+  if (!password || typeof password !== 'string' || password.length < 6) {
+    return res.status(400).json({ error: 'invalid_password' });
+  }
+
+  const normalizedEmail = email.trim().toLowerCase();
+  const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(normalizedEmail);
+  if (existing) {
+    return res.status(409).json({ error: 'email_taken' });
+  }
+
+  // If `ref` matches someone's referral code, remember who referred this
+  // new user. An unknown/missing ref code is fine - just no referrer.
+  let referredBy = null;
+  if (ref) {
+    const referrer = db.prepare('SELECT id FROM users WHERE referral_code = ?').get(ref);
+    if (referrer) referredBy = referrer.id;
+  }
+
+  const passwordHash = await bcrypt.hash(password, 10);
+  const now = new Date();
+  const trialEndsAt = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+  const referralCode = uniqueReferralCode();
+
+  const info = db.prepare(`
+    INSERT INTO users (email, password_hash, created_at, plan, trial_ends_at, referral_code, referred_by)
+    VALUES (?, ?, ?, 'trial', ?, ?, ?)
+  `).run(normalizedEmail, passwordHash, now.toISOString(), trialEndsAt.toISOString(), referralCode, referredBy);
+
+  const token = signToken({ id: info.lastInsertRowid, email: normalizedEmail });
+  res.json({ token });
+});
+
+app.post('/api/login', async (req, res) => {
+  const { email, password } = req.body || {};
+  if (!email || !password) return res.status(400).json({ error: 'missing_fields' });
+
+  const normalizedEmail = String(email).trim().toLowerCase();
+  const user = db.prepare('SELECT * FROM users WHERE email = ?').get(normalizedEmail);
+  if (!user) return res.status(401).json({ error: 'invalid_credentials' });
+
+  const passwordMatches = await bcrypt.compare(password, user.password_hash);
+  if (!passwordMatches) return res.status(401).json({ error: 'invalid_credentials' });
+
+  const token = signToken(user);
+  res.json({ token });
+});
+
+app.get('/api/me', requireAuth, (req, res) => {
+  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.userId);
+  if (!user) return res.status(401).json({ error: 'unauthorized' });
+
+  const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+  const usageRows = db.prepare(`
+    SELECT feature, COUNT(*) as count FROM usage
+    WHERE user_id = ? AND created_at >= ?
+    GROUP BY feature
+  `).all(user.id, weekAgo);
+
+  const weeklyUsage = {};
+  VALID_FEATURES.forEach((f) => { weeklyUsage[f] = 0; });
+  usageRows.forEach((r) => { weeklyUsage[r.feature] = r.count; });
+
+  res.json({
+    email: user.email,
+    plan: effectivePlan(user),
+    trial_ends_at: user.trial_ends_at,
+    referral_code: user.referral_code,
+    weekly_usage: weeklyUsage,
+  });
+});
+
+// Checks (and records) whether the logged-in user is allowed to use a
+// feature right now, based on their plan and this week's usage.
+app.post('/api/use', requireAuth, (req, res) => {
+  const { feature, detail } = req.body || {};
+  if (!VALID_FEATURES.includes(feature)) {
+    return res.status(400).json({ error: 'invalid_feature' });
+  }
+
+  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.userId);
+  if (!user) return res.status(401).json({ error: 'unauthorized' });
+
+  const plan = effectivePlan(user);
+
+  if (plan === 'pro' || plan === 'trial') {
+    db.prepare('INSERT INTO usage (user_id, feature, detail, created_at) VALUES (?, ?, ?, ?)')
+      .run(user.id, feature, detail || null, new Date().toISOString());
+    return res.json({ allowed: true, remaining: null }); // null = unlimited
+  }
+
+  // Free plan (or an expired trial): only grading/valuing, capped
+  // combined at FREE_WEEKLY_LIMIT uses per rolling 7 days, no auction.
+  if (!FREE_ALLOWED_FEATURES.includes(feature)) {
+    return res.json({ allowed: false, remaining: 0 });
+  }
+
+  const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+  const placeholders = FREE_ALLOWED_FEATURES.map(() => '?').join(',');
+  const usedRow = db.prepare(`
+    SELECT COUNT(*) as count FROM usage
+    WHERE user_id = ? AND feature IN (${placeholders}) AND created_at >= ?
+  `).get(user.id, ...FREE_ALLOWED_FEATURES, weekAgo);
+
+  const remainingBefore = Math.max(0, FREE_WEEKLY_LIMIT - usedRow.count);
+  if (remainingBefore <= 0) {
+    return res.json({ allowed: false, remaining: 0 });
+  }
+
+  db.prepare('INSERT INTO usage (user_id, feature, detail, created_at) VALUES (?, ?, ?, ?)')
+    .run(user.id, feature, detail || null, new Date().toISOString());
+
+  res.json({ allowed: true, remaining: remainingBefore - 1 });
+});
+
+// ===== ADMIN DASHBOARD =====
+
+app.get('/api/admin/stats', requireAuth, requireAdmin, (req, res) => {
+  const totalUsers = db.prepare('SELECT COUNT(*) as count FROM users').get().count;
+
+  const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  const dailyActiveUsers = db.prepare(
+    'SELECT COUNT(DISTINCT user_id) as count FROM usage WHERE created_at >= ?'
+  ).get(dayAgo).count;
+
+  // Signups for each of the last 30 days, zero-filled so there are no
+  // gaps for the admin page's chart to deal with.
+  const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+  const signupRows = db.prepare(`
+    SELECT substr(created_at, 1, 10) as day, COUNT(*) as count
+    FROM users
+    WHERE created_at >= ?
+    GROUP BY day
+  `).all(thirtyDaysAgo);
+  const signupsByDay = {};
+  signupRows.forEach((r) => { signupsByDay[r.day] = r.count; });
+  const signupsPerDay = [];
+  for (let i = 29; i >= 0; i--) {
+    const day = new Date(Date.now() - i * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    signupsPerDay.push({ date: day, count: signupsByDay[day] || 0 });
+  }
+
+  const featureRows = db.prepare('SELECT feature, COUNT(*) as count FROM usage GROUP BY feature').all();
+  const featureUsage = {};
+  VALID_FEATURES.forEach((f) => { featureUsage[f] = 0; });
+  featureRows.forEach((r) => { featureUsage[r.feature] = r.count; });
+
+  const topSearches = db.prepare(`
+    SELECT detail as term, COUNT(*) as count
+    FROM usage
+    WHERE feature = 'search' AND detail IS NOT NULL AND detail != ''
+    GROUP BY detail
+    ORDER BY count DESC
+    LIMIT 20
+  `).all();
+
+  const users = db.prepare(`
+    SELECT
+      u.email,
+      u.plan,
+      u.created_at,
+      (SELECT COUNT(*) FROM usage WHERE user_id = u.id) as total_uses,
+      (SELECT MAX(created_at) FROM usage WHERE user_id = u.id) as last_active
+    FROM users u
+    ORDER BY u.created_at DESC
+  `).all();
+
+  res.json({ totalUsers, dailyActiveUsers, signupsPerDay, featureUsage, topSearches, users });
+});
 
 app.get('/api/price', async (req, res) => {
   const query = req.query.q;

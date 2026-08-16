@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>The Deck - Admin</title>
+<style>
+  :root {
+    --bg: #0b0b0d;
+    --panel: #16161a;
+    --border: #2a2a30;
+    --text: #eee;
+    --gray: #999;
+    --gold: #c9a84c;
+    --danger: #e05555;
+  }
+  * { box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+    margin: 0;
+    padding: 24px 16px 60px;
+  }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--gray); font-size: 13px; margin: 0 0 24px; }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+    margin-bottom: 16px;
+    max-width: 900px;
+  }
+  input {
+    background: #000;
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 10px 12px;
+    border-radius: 6px;
+    font-size: 14px;
+    width: 100%;
+    margin-bottom: 10px;
+  }
+  button {
+    background: var(--gold);
+    color: #000;
+    border: none;
+    padding: 10px 16px;
+    border-radius: 6px;
+    font-weight: 700;
+    cursor: pointer;
+    font-size: 13px;
+  }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .error { color: var(--danger); font-size: 13px; margin-top: 8px; }
+  .stat-grid { display: flex; gap: 12px; flex-wrap: wrap; max-width: 900px; margin-bottom: 16px; }
+  .stat-box {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 18px;
+    min-width: 140px;
+  }
+  .stat-box .n { font-size: 26px; font-weight: 800; color: var(--gold); }
+  .stat-box .l { font-size: 11px; color: var(--gray); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 2px; }
+  h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--gray); margin: 0 0 12px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+  th { color: var(--gray); font-weight: 600; font-size: 11px; text-transform: uppercase; }
+  .bar-row { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; font-size: 11px; }
+  .bar-label { width: 70px; color: var(--gray); flex-shrink: 0; }
+  .bar-track { flex: 1; background: #000; border-radius: 4px; height: 14px; overflow: hidden; }
+  .bar-fill { background: var(--gold); height: 100%; }
+  .bar-count { width: 30px; text-align: right; color: var(--gray); flex-shrink: 0; }
+  .access-denied { text-align: center; padding: 60px 20px; }
+  .access-denied .n { font-size: 40px; margin-bottom: 12px; }
+  #deniedBox, #dashboard { display: none; }
+</style>
+</head>
+<body>
+
+<div id="loginBox" class="card" style="max-width:360px">
+  <h1>The Deck Admin</h1>
+  <p class="sub">Sign in with the admin account to view the dashboard.</p>
+  <input id="email" type="email" placeholder="Email" autocomplete="username">
+  <input id="password" type="password" placeholder="Password" autocomplete="current-password">
+  <button id="loginBtn" onclick="doLogin()">Sign In</button>
+  <div id="loginError" class="error"></div>
+</div>
+
+<div id="deniedBox" class="access-denied">
+  <div class="n">&#128274;</div>
+  <h1>Access Denied</h1>
+  <p class="sub">This account isn't allowed to view the admin dashboard.</p>
+  <button onclick="logout()">Sign In as Someone Else</button>
+</div>
+
+<div id="dashboard">
+  <h1>The Deck Admin</h1>
+  <p class="sub">Live account &amp; usage stats. <span style="cursor:pointer;text-decoration:underline;color:var(--gold)" onclick="logout()">Sign out</span></p>
+
+  <div class="stat-grid">
+    <div class="stat-box"><div class="n" id="statTotalUsers">-</div><div class="l">Total Users</div></div>
+    <div class="stat-box"><div class="n" id="statDAU">-</div><div class="l">Active (24h)</div></div>
+  </div>
+
+  <div class="card">
+    <h2>Signups - Last 30 Days</h2>
+    <div id="signupChart"></div>
+  </div>
+
+  <div class="card">
+    <h2>Feature Usage</h2>
+    <div id="featureChart"></div>
+  </div>
+
+  <div class="card">
+    <h2>Top Searched Cards</h2>
+    <table>
+      <thead><tr><th>#</th><th>Search Term</th><th>Count</th></tr></thead>
+      <tbody id="topSearchesBody"></tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>Users</h2>
+    <table>
+      <thead><tr><th>Email</th><th>Plan</th><th>Signed Up</th><th>Total Uses</th><th>Last Active</th></tr></thead>
+      <tbody id="usersBody"></tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+var TOKEN_KEY = 'deckAdminToken';
+
+function getToken() { return localStorage.getItem(TOKEN_KEY); }
+function setToken(t) { localStorage.setItem(TOKEN_KEY, t); }
+function clearToken() { localStorage.removeItem(TOKEN_KEY); }
+
+function showLogin() {
+  document.getElementById('loginBox').style.display = 'block';
+  document.getElementById('deniedBox').style.display = 'none';
+  document.getElementById('dashboard').style.display = 'none';
+}
+function showDenied() {
+  document.getElementById('loginBox').style.display = 'none';
+  document.getElementById('deniedBox').style.display = 'block';
+  document.getElementById('dashboard').style.display = 'none';
+}
+function showDashboard() {
+  document.getElementById('loginBox').style.display = 'none';
+  document.getElementById('deniedBox').style.display = 'none';
+  document.getElementById('dashboard').style.display = 'block';
+}
+
+function logout() {
+  clearToken();
+  showLogin();
+}
+
+async function doLogin() {
+  var email = document.getElementById('email').value.trim();
+  var password = document.getElementById('password').value;
+  var errEl = document.getElementById('loginError');
+  var btn = document.getElementById('loginBtn');
+  errEl.textContent = '';
+
+  if (!email || !password) {
+    errEl.textContent = 'Enter an email and password.';
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = 'Signing in...';
+  try {
+    var res = await fetch('/api/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: email, password: password })
+    });
+    var data = await res.json();
+    if (!res.ok || !data.token) {
+      errEl.textContent = 'Incorrect email or password.';
+      return;
+    }
+    setToken(data.token);
+    await loadDashboard();
+  } catch (e) {
+    errEl.textContent = 'Could not reach the server. Is it running?';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Sign In';
+  }
+}
+
+function renderBarChart(container, rows, labelKey, countKey, maxBars) {
+  var items = rows.slice();
+  if (maxBars) items = items.slice(-maxBars);
+  var max = Math.max.apply(null, items.map(function (r) { return r[countKey]; }).concat([1]));
+  container.innerHTML = items.map(function (r) {
+    var pct = Math.round((r[countKey] / max) * 100);
+    return '<div class="bar-row">'
+      + '<div class="bar-label">' + r[labelKey] + '</div>'
+      + '<div class="bar-track"><div class="bar-fill" style="width:' + pct + '%"></div></div>'
+      + '<div class="bar-count">' + r[countKey] + '</div>'
+      + '</div>';
+  }).join('');
+}
+
+function fmtDate(iso) {
+  if (!iso) return 'Never';
+  var d = new Date(iso);
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+async function loadDashboard() {
+  var token = getToken();
+  if (!token) { showLogin(); return; }
+
+  var res;
+  try {
+    res = await fetch('/api/admin/stats', {
+      headers: { Authorization: 'Bearer ' + token }
+    });
+  } catch (e) {
+    document.getElementById('loginError').textContent = 'Could not reach the server.';
+    showLogin();
+    return;
+  }
+
+  if (res.status === 401) {
+    clearToken();
+    showLogin();
+    return;
+  }
+  if (res.status === 403) {
+    showDenied();
+    return;
+  }
+  if (!res.ok) {
+    document.getElementById('loginError').textContent = 'Something went wrong loading the dashboard.';
+    showLogin();
+    return;
+  }
+
+  var data = await res.json();
+
+  document.getElementById('statTotalUsers').textContent = data.totalUsers;
+  document.getElementById('statDAU').textContent = data.dailyActiveUsers;
+
+  renderBarChart(document.getElementById('signupChart'), data.signupsPerDay, 'date', 'count', 14);
+
+  var featureRows = Object.keys(data.featureUsage).map(function (k) {
+    return { feature: k, count: data.featureUsage[k] };
+  });
+  renderBarChart(document.getElementById('featureChart'), featureRows, 'feature', 'count');
+
+  var topSearchesBody = document.getElementById('topSearchesBody');
+  if (!data.topSearches.length) {
+    topSearchesBody.innerHTML = '<tr><td colspan="3" style="color:var(--gray)">No searches recorded yet.</td></tr>';
+  } else {
+    topSearchesBody.innerHTML = data.topSearches.map(function (row, i) {
+      return '<tr><td>' + (i + 1) + '</td><td>' + row.term + '</td><td>' + row.count + '</td></tr>';
+    }).join('');
+  }
+
+  var usersBody = document.getElementById('usersBody');
+  if (!data.users.length) {
+    usersBody.innerHTML = '<tr><td colspan="5" style="color:var(--gray)">No users yet.</td></tr>';
+  } else {
+    usersBody.innerHTML = data.users.map(function (u) {
+      return '<tr><td>' + u.email + '</td><td>' + u.plan + '</td><td>' + fmtDate(u.created_at)
+        + '</td><td>' + u.total_uses + '</td><td>' + fmtDate(u.last_active) + '</td></tr>';
+    }).join('');
+  }
+
+  showDashboard();
+}
+
+// If we already have a saved token (e.g. page refresh), try it immediately.
+if (getToken()) {
+  loadDashboard();
+} else {
+  showLogin();
+}
+</script>
+</body>
+</html>

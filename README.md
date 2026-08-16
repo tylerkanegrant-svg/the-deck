@@ -32,6 +32,14 @@ this:
 ```
 EBAY_CLIENT_ID=YourAppIdGoesHere
 EBAY_CLIENT_SECRET=YourCertIdGoesHere
+JWT_SECRET=SomeLongRandomStringGoesHere
+```
+
+`JWT_SECRET` is used to sign login sessions for accounts (see below) —
+it can be any long random string. Generate one with:
+
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 ```
 
 Save the file. `.env` is already listed in `.gitignore`, so it will
@@ -67,6 +75,37 @@ http://localhost:3001/api/price?q=LaMelo+Ball+Prizm
 You should get back JSON with card prices. Then open your
 `the-deck-v4.html` file like normal — it will call this server
 automatically.
+
+## Accounts, usage limits, and the admin dashboard
+
+The backend now has real accounts, stored in a local file called
+`data.db` (a SQLite database — it's created automatically the first
+time you run the server). It's in `.gitignore`, so it never gets
+committed.
+
+**Important:** if you deploy this to a free host like Render, that
+host's disk is usually wiped every time it restarts or redeploys —
+which means everyone's accounts would get deleted too. This is fine
+for testing, but before you rely on this for real users, ask about
+adding a persistent disk (or a hosted database) so accounts don't
+disappear.
+
+**Endpoints:**
+- `POST /api/signup` — `{ email, password, ref? }` → creates an
+  account (starts on a 30-day free trial) and returns a login token.
+- `POST /api/login` — `{ email, password }` → returns a login token.
+- `GET /api/me` — with `Authorization: Bearer <token>` → your account
+  info and this week's usage.
+- `POST /api/use` — `{ feature }` (one of `grading`, `valuing`,
+  `auction`, `search`) → checks whether you're allowed to use that
+  feature right now, and records it if so.
+
+**Admin dashboard:** open `http://localhost:3001/admin.html` and sign
+in with an account whose email is exactly `admin@thedeck.com` (sign
+one up via `/api/signup` first). Every other account gets "Access
+Denied." There's currently no way to upgrade a real account's plan
+from `trial`/`free` to `pro` yet (no payments are wired up) — that's
+intentionally left for later.
 
 ## Notes
 

@@ -1856,8 +1856,6 @@ function scanFiles(files,mode){
         img.onload=function(){
           if(run!==_scanRun)return;
           Tesseract.recognize(prepCanvas(img),'eng',{
-            workerPath:'https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/5.1.0/worker.min.js',
-            corePath:'https://cdnjs.cloudflare.com/ajax/libs/tesseract.js-core/5.1.0/tesseract-core-simd.wasm.js',
             logger:function(m){
               if(run!==_scanRun)return;
               armWatchdog();
@@ -1899,10 +1897,7 @@ function warmTesseract(){
     if(err||!window.Tesseract)return;
     var cv=document.createElement('canvas');
     cv.width=1;cv.height=1;
-    Tesseract.recognize(cv,'eng',{
-      workerPath:'https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/5.1.0/worker.min.js',
-      corePath:'https://cdnjs.cloudflare.com/ajax/libs/tesseract.js-core/5.1.0/tesseract-core-simd.wasm.js'
-    }).catch(function(){});
+    Tesseract.recognize(cv,'eng').catch(function(){});
   });
 }
 setTimeout(warmTesseract,4000);

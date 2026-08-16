@@ -1957,6 +1957,11 @@ function scanFailed(mode,reason){
 }
 
 function handleScanResult(text,mode){
+  // Always logged (not just on failure) so an imperfect-but-"successful"
+  // parse - like a slab label read as gibberish that still produced SOME
+  // name - can be diagnosed from the raw source text, not just guessed at
+  // from the parsed result.
+  console.log('OCR raw text:',text);
   var lines=text.split('\n').map(function(l){return l.trim();}).filter(function(l){return l.length>2;});
 
   // Known sets/brands - hunt for these anywhere in the text
@@ -1970,13 +1975,22 @@ function handleScanResult(text,mode){
   var yearM=text.match(/\b(19|20)\d{2}(-\d{2})?\b/);
   var year=yearM?yearM[0]:'';
 
-  // Grade: PSA/BGS/SGC/CGC + number
+  // Grade: PSA/BGS/SGC/CGC + number. Slab labels often put the grading
+  // company name (bottom, near the barcode/cert number) and the grade
+  // itself (e.g. "MINT 9", same row as the player name) in different
+  // physical spots, which OCR can read out of order or far apart - so
+  // this doesn't require them to be close together or in a fixed order,
+  // just both present somewhere in the scanned text.
   var grade='';
-  var gm=text.match(/\b(PSA|BGS|SGC|CGC)\b[\s\S]{0,30}?\b(10|9\.5|9|8\.5|8|7)\b/i);
-  if(gm)grade=gm[1].toUpperCase()+' '+gm[2];
-  else{
-    var mint=text.match(/\b(GEM\s*M(?:IN)?T|MINT|NM-?MT)\s*(10|9|8)\b/i);
-    if(mint)grade='PSA '+mint[2];
+  var company=text.match(/\b(PSA|BGS|SGC|CGC)\b/i);
+  var mint=text.match(/\b(GEM\s*M(?:IN)?T|MINT|NM-?MT)\s*[\s:.\-]{0,10}(10|9\.5|9|8\.5|8|7)\b/i);
+  if(company&&mint){
+    grade=company[1].toUpperCase()+' '+mint[2];
+  }else if(company){
+    var nearNum=text.match(new RegExp('\\b'+company[1]+'\\b[\\s\\S]{0,60}?\\b(10|9\\.5|9|8\\.5|8|7)\\b','i'));
+    if(nearNum)grade=company[1].toUpperCase()+' '+nearNum[1];
+  }else if(mint){
+    grade='PSA '+mint[2];
   }
 
   // Cert: 7-10 digit number
@@ -1998,16 +2012,28 @@ function handleScanResult(text,mode){
     return stopCount<2;
   }
 
-  // Name: longest mostly-letters line that is not a grade line and
-  // actually looks like a name rather than a sentence
+  // Slab labels put the player name and the grade on the same physical
+  // row in some layouts, so OCR can merge them into one line (e.g.
+  // "Anthony Edwards MINT 9"). Strip grading vocabulary out of a
+  // candidate line - wherever it falls, not just at the start - so that
+  // doesn't end up glued onto the name.
+  function stripGradingTerms(l){
+    return l.replace(/\b(PSA|BGS|SGC|CGC|GEM\s*M(?:IN)?T|MINT|NM-?MT)\b/gi,' ')
+      .replace(/\b(10|9\.5|9|8\.5|8|7)\b/g,' ')
+      .replace(/\s+/g,' ').trim();
+  }
+
+  // Name: longest mostly-letters line (after stripping grading terms)
+  // that actually looks like a name rather than a sentence
   var name='';
   var best=0;
   lines.forEach(function(l){
-    if(/^(PSA|BGS|SGC|CGC|GEM|MINT|NM)/i.test(l))return;
-    if(/^\d+$/.test(l))return;
-    if(!looksLikeCardName(l))return;
-    var letters=(l.match(/[a-zA-Z]/g)||[]).length;
-    if(letters>best&&letters>=4){best=letters;name=l;}
+    var cleaned=stripGradingTerms(l);
+    if(!cleaned)return;
+    if(/^\d+$/.test(cleaned))return;
+    if(!looksLikeCardName(cleaned))return;
+    var letters=(cleaned.match(/[a-zA-Z]/g)||[]).length;
+    if(letters>best&&letters>=4){best=letters;name=cleaned;}
   });
   name=name.replace(/[^a-zA-Z0-9\s'\/#-]/g,' ').replace(/\s+/g,' ').trim();
 

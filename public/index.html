@@ -1787,6 +1787,7 @@ function resetGuidedScan(){
 
 function scanFiles(files,mode){
   var run=++_scanRun;
+  var currentSide='loading';
   setScanStatus(mode,'Loading scanner...');
 
   function armWatchdog(){
@@ -1794,7 +1795,7 @@ function scanFiles(files,mode){
     _scanWatchdog=setTimeout(function(){
       if(run!==_scanRun)return;
       _scanRun++;
-      scanFailed(mode);
+      scanFailed(mode,'timeout while reading '+currentSide);
     },20000);
   }
   armWatchdog();
@@ -1804,7 +1805,7 @@ function scanFiles(files,mode){
     if(err||!window.Tesseract){
       if(_scanWatchdog)clearTimeout(_scanWatchdog);
       _scanRun++;
-      scanFailed(mode);
+      scanFailed(mode,'ocr engine failed to load: '+(err&&err.message?err.message:'unknown'));
       return;
     }
 
@@ -1836,11 +1837,22 @@ function scanFiles(files,mode){
         return;
       }
       var side=files.length>1?(idx===0?'front':'back'):'card';
+      currentSide=side;
       setScanStatus(mode,'Reading '+side+'...');
       armWatchdog();
       var reader=new FileReader();
+      reader.onerror=function(){
+        if(run!==_scanRun)return;
+        if(_scanWatchdog)clearTimeout(_scanWatchdog);
+        scanFailed(mode,'could not read '+side+' image file');
+      };
       reader.onload=function(e){
         var img=new Image();
+        img.onerror=function(){
+          if(run!==_scanRun)return;
+          if(_scanWatchdog)clearTimeout(_scanWatchdog);
+          scanFailed(mode,'could not decode '+side+' image');
+        };
         img.onload=function(){
           if(run!==_scanRun)return;
           Tesseract.recognize(prepCanvas(img),'eng',{
@@ -1856,13 +1868,13 @@ function scanFiles(files,mode){
             allText+='\n'+(res.data.text||'');
             idx++;
             scanNext();
-          }).catch(function(){
+          }).catch(function(e){
             if(run!==_scanRun)return;
             // One photo failed - try the rest, or fail if nothing read
             idx++;
             if(idx>=files.length&&!allText.trim()){
               if(_scanWatchdog)clearTimeout(_scanWatchdog);
-              scanFailed(mode);
+              scanFailed(mode,'ocr error on '+side+': '+(e&&e.message?e.message:'unknown'));
             } else {
               scanNext();
             }
@@ -1895,7 +1907,8 @@ function warmTesseract(){
 }
 setTimeout(warmTesseract,4000);
 
-function scanFailed(mode){
+function scanFailed(mode,reason){
+  if(reason)console.error('Card scan failed:',reason);
   // In the Claude preview the scanner brain files are blocked - show the demo flow there
   var host=(window.location&&window.location.hostname)||'';
   var inPreview=window.location.protocol==='blob:'||host.indexOf('claude')>-1||host.indexOf('usercontent')>-1||host==='';
@@ -1917,10 +1930,16 @@ function scanFailed(mode){
   var retryAction=mode==='listing'
     ?"document.getElementById('scanInputList').click()"
     :"runGuidedScan()";
+  // Reason is shown in plain sight (not just devtools) since most people
+  // testing this on a phone can't easily open the console - having the
+  // exact failure reason on screen means it can just be copied and sent
+  // straight back for a real fix instead of guessing blind.
+  var debugLine=reason?('<div style="margin-top:8px;font-size:10px;color:var(--gray);opacity:0.7">Debug: '+reason.replace(/[<>]/g,'')+'</div>'):'';
   el.innerHTML='Could not read that one clearly. Good lighting and getting close so the text is sharp both help. '
     +'<button onclick="'+retryAction+'" style="background:none;border:none;color:var(--gold);text-decoration:underline;font-family:inherit;font-size:inherit;cursor:pointer;padding:0">Try again</button>'
     +' or '
-    +'<button onclick="setScanStatus(\''+mode+'\',\'\');var b=document.getElementById(\''+(mode==='listing'?'lName':'cardQ')+'\');if(b)b.focus();" style="background:none;border:none;color:var(--gold);text-decoration:underline;font-family:inherit;font-size:inherit;cursor:pointer;padding:0">type it instead</button>';
+    +'<button onclick="setScanStatus(\''+mode+'\',\'\');var b=document.getElementById(\''+(mode==='listing'?'lName':'cardQ')+'\');if(b)b.focus();" style="background:none;border:none;color:var(--gold);text-decoration:underline;font-family:inherit;font-size:inherit;cursor:pointer;padding:0">type it instead</button>'
+    +debugLine;
 }
 
 function handleScanResult(text,mode){
@@ -1963,7 +1982,8 @@ function handleScanResult(text,mode){
   name=name.replace(/[^a-zA-Z0-9\s'\/#-]/g,' ').replace(/\s+/g,' ').trim();
 
   if(!name&&!grade&&!cert){
-    scanFailed(mode);
+    var snippet=text.replace(/\s+/g,' ').trim().slice(0,120);
+    scanFailed(mode,'no usable fields in OCR text (recognized: "'+snippet+'")');
     return;
   }
 

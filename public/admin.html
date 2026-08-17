@@ -103,6 +103,7 @@
   <div class="stat-grid">
     <div class="stat-box"><div class="n" id="statTotalUsers">-</div><div class="l">Total Users</div></div>
     <div class="stat-box"><div class="n" id="statDAU">-</div><div class="l">Active (24h)</div></div>
+    <div class="stat-box"><div class="n" id="statAvgUses">-</div><div class="l">Avg Uses / Active User</div></div>
   </div>
 
   <div class="card">
@@ -249,6 +250,7 @@ async function loadDashboard() {
 
   document.getElementById('statTotalUsers').textContent = data.totalUsers;
   document.getElementById('statDAU').textContent = data.dailyActiveUsers;
+  document.getElementById('statAvgUses').textContent = data.avgUsesPerActiveUser;
 
   renderBarChart(document.getElementById('signupChart'), data.signupsPerDay, 'date', 'count', 14);
 

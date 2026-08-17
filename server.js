@@ -313,6 +313,14 @@ app.get('/api/admin/stats', requireAuth, requireAdmin, (req, res) => {
     'SELECT COUNT(DISTINCT user_id) as count FROM usage WHERE created_at >= ?'
   ).get(dayAgo).count;
 
+  // "Active user" here = anyone with at least one usage row, ever (not
+  // just the last 24h) - average uses per active user, all-time.
+  const totalUsageRows = db.prepare('SELECT COUNT(*) as count FROM usage').get().count;
+  const activeUserCount = db.prepare('SELECT COUNT(DISTINCT user_id) as count FROM usage').get().count;
+  const avgUsesPerActiveUser = activeUserCount > 0
+    ? Math.round((totalUsageRows / activeUserCount) * 10) / 10
+    : 0;
+
   // Signups for each of the last 30 days, zero-filled so there are no
   // gaps for the admin page's chart to deal with.
   const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
@@ -355,7 +363,7 @@ app.get('/api/admin/stats', requireAuth, requireAdmin, (req, res) => {
     ORDER BY u.created_at DESC
   `).all();
 
-  res.json({ totalUsers, dailyActiveUsers, signupsPerDay, featureUsage, topSearches, users });
+  res.json({ totalUsers, dailyActiveUsers, avgUsesPerActiveUser, signupsPerDay, featureUsage, topSearches, users });
 });
 
 // ===== PSA CERT LOOKUP =====

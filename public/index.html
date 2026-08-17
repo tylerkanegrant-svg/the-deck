@@ -1956,7 +1956,7 @@ function scanFailed(mode,reason){
     +debugLine;
 }
 
-function handleScanResult(text,mode){
+async function handleScanResult(text,mode){
   // Always logged (not just on failure) so an imperfect-but-"successful"
   // parse - like a slab label read as gibberish that still produced SOME
   // name - can be diagnosed from the raw source text, not just guessed at
@@ -2043,22 +2043,51 @@ function handleScanResult(text,mode){
     return;
   }
 
-  if(mode==='listing'){
-    if(name){var ln=document.getElementById('lName');if(ln&&!ln.value.trim())ln.value=name;}
-    if(foundSet||year){var ls=document.getElementById('lSet');if(ls&&!ls.value.trim())ls.value=[year,foundSet].filter(Boolean).join(' ');}
-    if(cert){var lc=document.getElementById('lCert');if(lc)lc.value=cert;}
-    if(grade){
-      var sel=document.getElementById('lGrade');
-      if(sel){for(var i=0;i<sel.options.length;i++){if(sel.options[i].text.toUpperCase()===grade.toUpperCase()){sel.selectedIndex=i;break;}}}
+  // The cert number is the one thing OCR reads reliably (it's just
+  // digits) - if we found one, look it up directly against PSA's database
+  // for the real card details instead of trusting the OCR-guessed
+  // name/grade. Falls back to the OCR guess silently if this fails for
+  // any reason (no PSA token configured, cert not found, PSA API down,
+  // network hiccup) - never blocks the scan.
+  var psaCard=null;
+  if(cert){
+    setScanStatus(mode,'Found cert #'+cert+' - checking PSA...');
+    try{
+      var pr=await fetch('/api/psa-cert/'+cert,{signal:AbortSignal.timeout(8000)});
+      var pd=await pr.json();
+      if(pd&&pd.card&&pd.card.subject){psaCard=pd.card;}
+      else if(pd&&pd.error){console.log('PSA cert lookup:',pd.error);}
+    }catch(e){
+      console.warn('PSA cert lookup failed, falling back to scanned text:',e.message);
     }
-    setScanStatus(mode,'Found: '+[name,foundSet,grade,cert?'#'+cert:''].filter(Boolean).join(' \u2022 '));
+  }
+
+  if(mode==='listing'){
+    if(psaCard){
+      var ln=document.getElementById('lName');if(ln&&!ln.value.trim())ln.value=psaCard.subject;
+      var ls=document.getElementById('lSet');if(ls&&!ls.value.trim())ls.value=[psaCard.year,psaCard.brand,psaCard.variety].filter(Boolean).join(' ');
+      if(psaCard.grade){
+        var sel=document.getElementById('lGrade');
+        if(sel){for(var i=0;i<sel.options.length;i++){if(sel.options[i].text.toUpperCase()==='PSA '+psaCard.grade.toUpperCase()){sel.selectedIndex=i;break;}}}
+      }
+    } else {
+      if(name){var ln2=document.getElementById('lName');if(ln2&&!ln2.value.trim())ln2.value=name;}
+      if(foundSet||year){var ls2=document.getElementById('lSet');if(ls2&&!ls2.value.trim())ls2.value=[year,foundSet].filter(Boolean).join(' ');}
+      if(grade){
+        var sel2=document.getElementById('lGrade');
+        if(sel2){for(var i2=0;i2<sel2.options.length;i2++){if(sel2.options[i2].text.toUpperCase()===grade.toUpperCase()){sel2.selectedIndex=i2;break;}}}
+      }
+    }
+    if(cert){var lc=document.getElementById('lCert');if(lc)lc.value=cert;}
+    var summary=psaCard?[psaCard.subject,psaCard.brand,psaCard.grade?'PSA '+psaCard.grade:'',cert?'#'+cert:'']:[name,foundSet,grade,cert?'#'+cert:''];
+    setScanStatus(mode,(psaCard?'Verified via PSA: ':'Found: ')+summary.filter(Boolean).join(' \u2022 '));
     setTimeout(function(){setScanStatus(mode,'');},4000);
   } else {
-    var q=[name,foundSet,grade].filter(Boolean).join(' ');
+    var q=psaCard&&psaCard.query?psaCard.query:[name,foundSet,grade].filter(Boolean).join(' ');
     var box=document.getElementById('cardQ');
     if(box)box.value=q;
     if(typeof resetGuidedScan==='function')resetGuidedScan();
-    setScanStatus(mode,'Found: '+q+' - searching...');
+    setScanStatus(mode,(psaCard?'Verified via PSA: ':'Found: ')+q+' - searching...');
     setTimeout(function(){setScanStatus(mode,'');doSearch();},900);
   }
 }

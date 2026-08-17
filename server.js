@@ -358,6 +358,71 @@ app.get('/api/admin/stats', requireAuth, requireAdmin, (req, res) => {
   res.json({ totalUsers, dailyActiveUsers, signupsPerDay, featureUsage, topSearches, users });
 });
 
+// ===== PSA CERT LOOKUP =====
+// The cert number printed on a PSA slab is the one thing OCR reads
+// reliably (it's just digits) - looking it up directly against PSA's own
+// database gets the real card details instead of guessing from garbled
+// label text.
+const PSA_API_BASE = 'https://api.psacard.com/publicapi';
+
+app.get('/api/psa-cert/:cert', async (req, res) => {
+  const cert = (req.params.cert || '').trim();
+  if (!/^\d{6,10}$/.test(cert)) {
+    return res.json({ error: 'invalid_cert' });
+  }
+
+  const token = process.env.PSA_API_TOKEN;
+  if (!token) {
+    return res.json({ error: 'missing_psa_token' });
+  }
+
+  try {
+    const response = await fetch(`${PSA_API_BASE}/cert/GetByCertNumber/${cert}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    if (!response.ok) {
+      const body = await response.text().catch(() => '');
+      console.error(`PSA cert lookup failed: ${response.status} - ${body}`);
+      const code = (response.status === 401 || response.status === 403) ? 'invalid_psa_token' : 'psa_unavailable';
+      return res.json({ error: code });
+    }
+
+    const data = await response.json();
+    // Logged so the exact field names PSA actually returns can be checked
+    // and the mapping below adjusted if it's not quite right - this is
+    // built from the public API docs, not a real test call.
+    console.log('PSA cert raw response:', JSON.stringify(data));
+
+    const c = data.PSACert || data.psaCert || data;
+    const card = {
+      certNumber: cert,
+      year: c.Year || c.year || '',
+      brand: c.Brand || c.brand || '',
+      category: c.Category || c.category || '',
+      subject: c.Subject || c.subject || '', // usually the player/character name
+      cardNumber: c.CardNumber || c.cardNumber || '',
+      variety: c.Variety || c.variety || '',
+      grade: c.CardGrade || c.Grade || c.grade || '',
+    };
+
+    if (!card.subject && !card.brand) {
+      return res.json({ error: 'cert_not_found' });
+    }
+
+    // A ready-to-search query string, so the frontend doesn't have to
+    // duplicate this assembly logic.
+    const queryParts = [card.year, card.brand, card.subject, card.variety].filter(Boolean);
+    if (card.grade) queryParts.push('PSA ' + card.grade);
+    card.query = queryParts.join(' ').trim();
+
+    res.json({ card });
+  } catch (err) {
+    console.error('PSA cert lookup errored:', err.message);
+    res.json({ error: 'psa_unavailable' });
+  }
+});
+
 app.get('/api/price', async (req, res) => {
   const query = req.query.q;
 

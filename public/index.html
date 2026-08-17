@@ -2870,8 +2870,8 @@ function runAiTrustCheck(a,sr){
 // ===== AUTH =====
 var _user = null;
 
-function authStore(key, val){ try{ localStorage.setItem(key, val); }catch(e){} }
-function authGet(key){ try{ return localStorage.getItem(key); }catch(e){ return null; } }
+function authStore(key, val){ try{ localStorage.setItem(key, val); }catch(e){ console.warn('Could not save account info - localStorage may be blocked, full, or unavailable (e.g. private browsing / an embedded browser):', e.message); } }
+function authGet(key){ try{ return localStorage.getItem(key); }catch(e){ console.warn('Could not read account info - localStorage may be blocked or unavailable:', e.message); return null; } }
 
 function switchAuthTab(tab){
   var si=document.getElementById('authSignIn');

@@ -495,6 +495,14 @@ async function fetchCardSightPricing(query) {
     }
 
     let data = await response.json();
+    // TEMPORARY: logs the exact, unprocessed response CardSight sends back
+    // for every search - real sold data has never shown up on any tested
+    // card, so this is here to see whether CardSight is actually returning
+    // sale listings at all, or whether the response shape just doesn't
+    // match what normalizeCardSightPricing() expects. Remove once that's
+    // confirmed one way or the other.
+    console.log(`CardSight raw response for "${query}":`, JSON.stringify(data));
+
     // Defensive: handle either a single card object or a list of matches
     // (the search endpoint's exact shape for multiple matches isn't
     // documented here) by taking the first result if it's an array.

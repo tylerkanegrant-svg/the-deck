@@ -485,13 +485,17 @@ function normalizeCardSightPricing(data) {
     (isSold ? bucket.sold : bucket.asking).push(price);
 
     if (isSold) {
+      // Same shape as eBay's recentSales entries (price pre-formatted as
+      // "$X", date pre-formatted) so the frontend can render both with
+      // shared logic instead of two different formats.
       soldListings.push({
         title: listing.title || (listing.matched_card ? listing.matched_card.name : '') || '',
-        price,
-        date: listing.date || '',
+        price: `$${Math.round(price)}`,
+        date: formatDate(listing.date),
         url: listing.url || '',
         image: listing.image_url || '',
         grade: grade ? `${grade.company_name} ${grade.grade_value}` : 'Raw',
+        _sortDate: listing.date || '',
       });
     }
   });
@@ -508,9 +512,10 @@ function normalizeCardSightPricing(data) {
     });
   });
 
-  soldListings.sort((a, b) => (a.date < b.date ? 1 : -1));
+  soldListings.sort((a, b) => (a._sortDate < b._sortDate ? 1 : -1));
+  const recentSoldListings = soldListings.slice(0, 10).map(({ _sortDate, ...rest }) => rest);
 
-  return { raw, graded, soldListings: soldListings.slice(0, 10) };
+  return { raw, graded, soldListings: recentSoldListings };
 }
 
 async function fetchCardSightPricing(query) {
@@ -761,6 +766,7 @@ app.get('/api/price', async (req, res) => {
       hasSoldData: cardsight.ok,
       stats,
       otherGrades,
+      soldListings: (cardsight.ok && cardsight.pricing.soldListings) || [],
       recentSales,
       comps: compsArr,
     });

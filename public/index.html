@@ -2412,7 +2412,7 @@ function renderError(q,data){
 }
 function renderEbay(q,data,originalQ){
   var s=data.stats;
-  var p={name:q,set:"Live eBay Data \u00b7 "+(data.validResults||0)+" listings",emoji:"&#127183;",prices:{raw:fmt(s.raw&&s.raw.avg),psa8:fmt(s.psa8&&s.psa8.avg),psa9:fmt(s.psa9&&s.psa9.avg),psa10:fmt(s.psa10&&s.psa10.avg)},changes:{raw:'',psa8:'',psa9:'',psa10:''},recentSales:(data.recentSales||[]).map(function(x){var g=(x.title||"").match(/\b(PSA|BGS|SGC|CGC)\s?-?\s?(10|9\.5|9|8\.5|8|7\.5|7)\b/i);return{date:x.date,grade:g?(g[1].toUpperCase()+' '+g[2]):"Raw",platform:"eBay",price:x.price,image:x.image||'',url:x.url||'',title:x.title||'',type:x.type||'',bids:x.bids||0};}),note:originalQ?('No exact matches for "'+originalQ+'" - showing results for "'+q+'" instead'):"Live eBay data",isLive:true};
+  var p={name:q,set:"Live eBay Data \u00b7 "+(data.validResults||0)+" listings",emoji:"&#127183;",prices:{raw:fmt(s.raw&&s.raw.avg),psa8:fmt(s.psa8&&s.psa8.avg),psa9:fmt(s.psa9&&s.psa9.avg),psa10:fmt(s.psa10&&s.psa10.avg)},statDetail:s,otherGrades:data.otherGrades||[],changes:{raw:'',psa8:'',psa9:'',psa10:''},recentSales:(data.recentSales||[]).map(function(x){var g=(x.title||"").match(/\b(PSA|BGS|SGC|CGC)\s?-?\s?(10|9\.5|9|8\.5|8|7\.5|7)\b/i);return{date:x.date,grade:g?(g[1].toUpperCase()+' '+g[2]):"Raw",platform:"eBay",price:x.price,image:x.image||'',url:x.url||'',title:x.title||'',type:x.type||'',bids:x.bids||0};}),note:originalQ?('No exact matches for "'+originalQ+'" - showing results for "'+q+'" instead'):"Live eBay data",isLive:true};
   renderPrice(p);
 }
 var _lastSales=[];
@@ -2592,9 +2592,41 @@ function renderPrice(p){
       +"</div>";
   }).join("");
   sales=sales?"<div style='display:flex;flex-direction:column;gap:8px;padding:14px 16px'><div style='font-size:9px;font-family:DM Mono,monospace;color:var(--gray);letter-spacing:0.12em;text-transform:uppercase'>"+(p.isLive?"Live eBay Listings":"Recent Sales")+"</div>"+sales+"</div>":"";
-  var gcs=[{l:"Raw",v:p.prices.raw,col:"#6b6b6b"},{l:"PSA 8",v:p.prices.psa8,col:"#f1c40f"},{l:"PSA 9",v:p.prices.psa9,col:"#2ecc71"},{l:"PSA 10",v:p.prices.psa10,col:"#c9a84c"}];
-  var gradeSection=p.isLive?"":"<div style='padding:10px 16px 2px;font-size:9px;font-family:DM Mono,monospace;color:var(--gray);letter-spacing:0.1em;text-transform:uppercase;border-top:1px solid var(--border)'>Price By Grade</div>"
-    +"<div class='cg'>"+gcs.map(function(x){var avg=parseFloat((x.v||"0").replace(/[^0-9.]/g,""))||0;var line=avg>0?mkLine(avg,x.col):"<div style='height:40px;display:flex;align-items:center;justify-content:center;font-size:9px;color:var(--gray);font-family:DM Mono,monospace'>No live listings</div>";return"<div class='cc'><div class='cl'>"+x.l+"</div><div class='cp' style='color:"+x.col+"'>"+x.v+"</div>"+line+"</div>";}).join("")+"</div>";
+  // Live results: each box prefers a real CardSight SOLD price (source
+  // 'sold') over the eBay active-listing fallback (source 'ebay_listings'
+  // - just an asking-price approximation, labeled as such). Demo/other
+  // callers without statDetail fall back to the old avg-only display.
+  var gcs=[{key:'raw',l:"Raw",v:p.prices.raw,col:"#6b6b6b"},{key:'psa8',l:"PSA 8",v:p.prices.psa8,col:"#f1c40f"},{key:'psa9',l:"PSA 9",v:p.prices.psa9,col:"#2ecc71"},{key:'psa10',l:"PSA 10",v:p.prices.psa10,col:"#c9a84c"}];
+  var gradeSection="<div style='padding:10px 16px 2px;font-size:9px;font-family:DM Mono,monospace;color:var(--gray);letter-spacing:0.1em;text-transform:uppercase;border-top:1px solid var(--border)'>Price By Grade</div>"
+    +"<div class='cg'>"+gcs.map(function(x){
+      var d=(p.statDetail&&p.statDetail[x.key])||null;
+      if(!d){
+        var avg=parseFloat((x.v||"0").replace(/[^0-9.]/g,""))||0;
+        var line=avg>0?mkLine(avg,x.col):"<div style='height:40px;display:flex;align-items:center;justify-content:center;font-size:9px;color:var(--gray);font-family:DM Mono,monospace'>No live listings</div>";
+        return"<div class='cc'><div class='cl'>"+x.l+"</div><div class='cp' style='color:"+x.col+"'>"+x.v+"</div>"+line+"</div>";
+      }
+      if(d.avg==null){
+        return"<div class='cc'><div class='cl'>"+x.l+"</div><div style='height:40px;display:flex;align-items:center;justify-content:center;font-size:9px;color:var(--gray);font-family:DM Mono,monospace'>No data</div></div>";
+      }
+      var sourceTag=d.source==='sold'
+        ?"<span style='font-size:8px;color:#2ecc71;font-weight:700;letter-spacing:0.04em'>SOLD</span>"
+        :"<span style='font-size:8px;color:var(--gray);letter-spacing:0.04em'>ASKING</span>";
+      var askingLine=(d.source==='sold'&&d.asking!=null)
+        ?"<div style='font-size:9px;color:var(--gray);margin-top:2px'>Asking ~$"+Math.round(d.asking)+"</div>"
+        :"";
+      return"<div class='cc'><div class='cl'>"+x.l+" "+sourceTag+"</div><div class='cp' style='color:"+x.col+"'>$"+Math.round(d.avg)+"</div>"+askingLine+"</div>";
+    }).join("")+"</div>";
+  var otherGradesSection='';
+  if(p.otherGrades&&p.otherGrades.length){
+    otherGradesSection="<div style='padding:10px 16px 2px;font-size:9px;font-family:DM Mono,monospace;color:var(--gray);letter-spacing:0.1em;text-transform:uppercase;border-top:1px solid var(--border)'>Other Grades</div>"
+      +"<div style='padding:2px 16px 10px'>"
+      +p.otherGrades.map(function(g){
+        var soldTxt=(g.sold&&g.sold.avg!=null)?("$"+Math.round(g.sold.avg)+" sold"):"";
+        var askTxt=(g.asking&&g.asking.avg!=null)?("$"+Math.round(g.asking.avg)+" asking"):"";
+        return"<div style='display:flex;justify-content:space-between;align-items:center;padding:7px 0;font-size:12px;border-bottom:1px solid var(--border)'><span style='font-weight:600'>"+g.company+" "+g.grade+"</span><span style='color:var(--gray-lt);font-size:11px'>"+[soldTxt,askTxt].filter(Boolean).join(" · ")+"</span></div>";
+      }).join("")
+      +"</div>";
+  }
   var badge=p.isLive?"<span style='font-size:9px;font-family:DM Mono,monospace;background:rgba(46,204,113,0.1);border:1px solid rgba(46,204,113,0.3);color:#2ecc71;padding:4px 8px'>&#10003; LIVE EBAY</span>":"<span style='font-size:9px;font-family:DM Mono,monospace;background:rgba(255,165,0,0.1);border:1px solid rgba(255,165,0,0.3);color:#f39c12;padding:4px 8px'>DEMO</span>";
 
   // Build sales history line graph from recentSales
@@ -2675,6 +2707,7 @@ function renderPrice(p){
     +graphSection
     +chartHtml
     +gradeSection
+    +otherGradesSection
     +sales
     +(p.note?"<div style='padding:8px 16px;border-top:1px solid var(--border);font-size:11px;color:rgba(245,242,235,0.45);font-style:italic'>&#128161; "+p.note+"</div>":"")
     +"</div>";

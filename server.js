@@ -431,6 +431,78 @@ app.get('/api/psa-cert/:cert', async (req, res) => {
   }
 });
 
+// ===== CARDSIGHT SOLD-PRICE DATA =====
+// eBay's Browse API only exposes active/asking listings, never confirmed
+// sales - CardSight gives real sold prices, split into "auction" (a real
+// completed sale) vs "fixed" (just an asking price, nobody's paid it).
+// Never throws - always resolves to { ok, ... } so a CardSight problem
+// can never take down the rest of /api/price.
+const CARDSIGHT_API_BASE = 'https://api.cardsight.ai/v1';
+
+function splitByListingType(listings) {
+  const sold = [];
+  const asking = [];
+  (listings || []).forEach((l) => {
+    const price = typeof l.price === 'number' ? l.price : parseFloat(l.price);
+    if (Number.isNaN(price)) return;
+    if (l.listing_type === 'auction') sold.push(price);
+    else if (l.listing_type === 'fixed') asking.push(price);
+  });
+  return {
+    sold: { avg: average(sold), count: sold.length },
+    asking: { avg: average(asking), count: asking.length },
+  };
+}
+
+// Reshapes CardSight's { raw, graded: { COMPANY: { GRADE: {...} } } }
+// response into the same { sold, asking } pairs at every level, so the
+// rest of the code doesn't need to know CardSight's raw shape.
+function normalizeCardSightPricing(data) {
+  const raw = splitByListingType(data.raw && data.raw.listings);
+
+  const graded = {};
+  const gradedData = data.graded || {};
+  Object.keys(gradedData).forEach((company) => {
+    graded[company] = {};
+    const grades = gradedData[company] || {};
+    Object.keys(grades).forEach((grade) => {
+      graded[company][grade] = splitByListingType(grades[grade] && grades[grade].listings);
+    });
+  });
+
+  return { raw, graded };
+}
+
+async function fetchCardSightPricing(query) {
+  const key = process.env.CARDSIGHT_API_KEY;
+  if (!key) return { ok: false, reason: 'missing_key' };
+
+  try {
+    const url = `${CARDSIGHT_API_BASE}/pricing/search?q=${encodeURIComponent(query)}`;
+    const response = await fetch(url, { headers: { Authorization: `Bearer ${key}` } });
+
+    if (!response.ok) {
+      const body = await response.text().catch(() => '');
+      console.error(`CardSight pricing lookup failed: ${response.status} - ${body}`);
+      return { ok: false, reason: response.status === 401 || response.status === 403 ? 'invalid_key' : 'unavailable' };
+    }
+
+    let data = await response.json();
+    // Defensive: handle either a single card object or a list of matches
+    // (the search endpoint's exact shape for multiple matches isn't
+    // documented here) by taking the first result if it's an array.
+    if (Array.isArray(data)) data = data[0];
+    if (!data || (!data.raw && !data.graded)) {
+      return { ok: false, reason: 'no_data' };
+    }
+
+    return { ok: true, pricing: normalizeCardSightPricing(data) };
+  } catch (err) {
+    console.error('CardSight pricing lookup errored:', err.message);
+    return { ok: false, reason: 'unavailable' };
+  }
+}
+
 app.get('/api/price', async (req, res) => {
   const query = req.query.q;
 
@@ -448,9 +520,11 @@ app.get('/api/price', async (req, res) => {
 
     const categoryIds = CARD_CATEGORY_IDS.split(',');
 
-    // Run every category's main search and auction search at the same time
-    // instead of one after another, so this doesn't take 6x as long.
-    const [mainResults, auctionResults] = await Promise.all([
+    // Run every category's main search, auction search, AND the CardSight
+    // sold-price lookup all at the same time - CardSight can never slow
+    // this down or fail the request, since fetchCardSightPricing always
+    // resolves (never throws/rejects).
+    const [mainResults, auctionResults, cardsight] = await Promise.all([
       Promise.all(categoryIds.map((catId) =>
         fetchItems(
           buildSearchUrl(query, catId, 'buyingOptions:{FIXED_PRICE|AUCTION|BEST_OFFER}', 30),
@@ -465,6 +539,7 @@ app.get('/api/price', async (req, res) => {
           `eBay auction search (category ${catId})`
         )
       )),
+      fetchCardSightPricing(query),
     ]);
 
     if (!mainResults.some((r) => r.ok)) {
@@ -514,15 +589,48 @@ app.get('/api/price', async (req, res) => {
     mixed.sort((a, b) => (a._sortDate < b._sortDate ? 1 : -1));
     const recentSales = mixed.map(({ _sortDate, ...rest }) => rest);
 
+    // A price bucket prefers CardSight's real SOLD price (source: 'sold').
+    // If CardSight has no sold data for this bucket, falls back to eBay's
+    // active-listing average instead (source: 'ebay_listings') - same
+    // number the app has always shown, just now clearly labeled as an
+    // asking-price approximation rather than a confirmed sale.
+    function buildStatBucket(cardsightBucket, ebayPrices) {
+      if (cardsightBucket && cardsightBucket.sold.avg !== null) {
+        return { avg: cardsightBucket.sold.avg, asking: cardsightBucket.asking.avg, source: 'sold' };
+      }
+      const ebayAvg = average(ebayPrices);
+      return { avg: ebayAvg, asking: null, source: ebayAvg !== null ? 'ebay_listings' : null };
+    }
+
+    const psaGraded = (cardsight.ok && cardsight.pricing.graded.PSA) || {};
+    const stats = {
+      raw: buildStatBucket(cardsight.ok ? cardsight.pricing.raw : null, buckets.raw),
+      psa8: buildStatBucket(psaGraded['8'], buckets.psa8),
+      psa9: buildStatBucket(psaGraded['9'], buckets.psa9),
+      psa10: buildStatBucket(psaGraded['10'], buckets.psa10),
+    };
+
+    // Anything CardSight returned beyond the raw/PSA-8/9/10 boxes above -
+    // other companies (BGS, SGC, ...) or other grades (9.5, 7, ...) - so
+    // that data isn't silently dropped on the floor.
+    const otherGrades = [];
+    if (cardsight.ok) {
+      Object.keys(cardsight.pricing.graded).forEach((company) => {
+        Object.keys(cardsight.pricing.graded[company]).forEach((grade) => {
+          if (company === 'PSA' && ['8', '9', '10'].includes(grade)) return;
+          const bucket = cardsight.pricing.graded[company][grade];
+          if (bucket.sold.avg === null && bucket.asking.avg === null) return;
+          otherGrades.push({ company, grade, sold: bucket.sold, asking: bucket.asking });
+        });
+      });
+    }
+
     res.json({
       validResults: buckets.raw.length + buckets.psa8.length + buckets.psa9.length + buckets.psa10.length,
       isListings: true,
-      stats: {
-        raw: { avg: average(buckets.raw) },
-        psa8: { avg: average(buckets.psa8) },
-        psa9: { avg: average(buckets.psa9) },
-        psa10: { avg: average(buckets.psa10) },
-      },
+      hasSoldData: cardsight.ok,
+      stats,
+      otherGrades,
       recentSales,
       comps: compsArr,
     });

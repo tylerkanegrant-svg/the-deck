@@ -2577,21 +2577,23 @@ function renderPrice(p){
     var ebayBtn=x.url
       ?"<button onclick=\"window.open('"+x.url.replace(/'/g,'')+"','_blank')\" style='margin-top:8px;background:rgba(46,204,113,0.08);border:1px solid rgba(46,204,113,0.3);color:#2ecc71;font-family:DM Sans,sans-serif;font-size:10px;font-weight:700;padding:6px 12px;border-radius:6px;cursor:pointer'>View on eBay &#8599;</button>"
       :"";
-    return "<div style='background:var(--s1);border:1px solid var(--border);border-radius:10px;padding:14px 16px'>"
+    var askingTag=p.isLive?"<span style='font-size:8px;color:#f39c12;font-weight:700;letter-spacing:0.04em;background:rgba(243,156,18,0.12);border:1px solid rgba(243,156,18,0.35);padding:2px 5px;border-radius:4px;vertical-align:middle;margin-left:8px'>ASKING</span>":"";
+    return "<div style='background:var(--s1);border:1px solid var(--border);"+(p.isLive?"border-left:3px solid rgba(243,156,18,0.5);":"")+"border-radius:10px;padding:14px 16px'>"
       +"<div style='display:flex;gap:12px;align-items:flex-start'>"
       +thumb
       +"<div style='flex:1;min-width:0'>"
       +"<div style='display:flex;align-items:center;gap:8px;margin-bottom:6px'>"+gpH(x.grade)+"<span style='font-size:10px;color:var(--gray);font-family:DM Mono,monospace'>"+(x.platform||'')+"</span></div>"
       +(x.title?"<div style='font-size:11px;color:var(--gray-lt);margin-bottom:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap'>"+x.title+"</div>":"")
-      +"<div style='font-family:Bebas Neue,sans-serif;font-size:26px;color:var(--white);line-height:1;margin-bottom:4px'>"+x.price+"</div>"
-      +"<div style='font-size:11px;color:var(--gray)'>"+(x.date?'Listed: '+x.date:'')+"</div>"
+      +"<div style='font-family:Bebas Neue,sans-serif;font-size:26px;color:"+(p.isLive?"#f39c12":"var(--white)")+";line-height:1;margin-bottom:4px'>"+x.price+askingTag+"</div>"
+      +"<div style='font-size:11px;color:var(--gray)'>"+(x.date?(p.isLive?'Listed: ':'Sold: ')+x.date:'')+"</div>"
       +(listType?"<div style='font-size:11px;color:var(--gray-lt)'>"+listType+"</div>":"")
       +ebayBtn
       +"</div>"
       +"</div>"
       +"</div>";
   }).join("");
-  sales=sales?"<div style='display:flex;flex-direction:column;gap:8px;padding:14px 16px'><div style='font-size:9px;font-family:DM Mono,monospace;color:var(--gray);letter-spacing:0.12em;text-transform:uppercase'>"+(p.isLive?"Live eBay Listings":"Recent Sales")+"</div>"+sales+"</div>":"";
+  var salesHeaderNote=p.isLive?"<div style='font-size:9px;color:var(--gray);font-family:DM Mono,monospace;margin-top:2px;font-style:italic'>Current asking prices — nobody has paid these yet</div>":"";
+  sales=sales?"<div style='display:flex;flex-direction:column;gap:8px;padding:14px 16px'><div><div style='font-size:9px;font-family:DM Mono,monospace;color:#f39c12;letter-spacing:0.12em;text-transform:uppercase'>"+(p.isLive?"⚠️ Live eBay Listings (Not Sold)":"Recent Sales")+"</div>"+salesHeaderNote+"</div>"+sales+"</div>":"";
   // Live results: each box prefers a real CardSight SOLD price (source
   // 'sold') over the eBay active-listing fallback (source 'ebay_listings'
   // - just an asking-price approximation, labeled as such). Demo/other
@@ -2609,8 +2611,8 @@ function renderPrice(p){
         return"<div class='cc'><div class='cl'>"+x.l+"</div><div style='height:40px;display:flex;align-items:center;justify-content:center;font-size:9px;color:var(--gray);font-family:DM Mono,monospace'>No data</div></div>";
       }
       var sourceTag=d.source==='sold'
-        ?"<span style='font-size:8px;color:#2ecc71;font-weight:700;letter-spacing:0.04em'>SOLD</span>"
-        :"<span style='font-size:8px;color:var(--gray);letter-spacing:0.04em'>ASKING</span>";
+        ?"<span style='font-size:8px;color:#2ecc71;font-weight:700;letter-spacing:0.04em;background:rgba(46,204,113,0.12);border:1px solid rgba(46,204,113,0.35);padding:2px 5px;border-radius:4px'>SOLD</span>"
+        :"<span style='font-size:8px;color:#f39c12;font-weight:700;letter-spacing:0.04em;background:rgba(243,156,18,0.12);border:1px solid rgba(243,156,18,0.35);padding:2px 5px;border-radius:4px'>ASKING</span>";
       var askingLine=(d.source==='sold'&&d.asking!=null)
         ?"<div style='font-size:9px;color:var(--gray);margin-top:2px'>Asking ~$"+Math.round(d.asking)+"</div>"
         :"";

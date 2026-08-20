@@ -139,9 +139,16 @@ function bucketForTitle(title) {
 }
 
 function average(numbers) {
-  if (numbers.length === 0) return null;
-  const sum = numbers.reduce((total, n) => total + n, 0);
-  return Math.round(sum / numbers.length);
+  // Filtering defensively (not just trusting every input is already a
+  // valid number) matters here: a single bad value - NaN, undefined,
+  // Infinity - poisons the whole sum via NaN propagation, and
+  // JSON.stringify silently turns a NaN average into null on the wire,
+  // which looks exactly like "no data" to the frontend instead of the
+  // real bug it actually is.
+  const valid = numbers.filter((n) => typeof n === 'number' && Number.isFinite(n));
+  if (valid.length === 0) return null;
+  const sum = valid.reduce((total, n) => total + n, 0);
+  return Math.round(sum / valid.length);
 }
 
 const CARD_NUMBER_PATTERN = /\/\s*\d+/;
@@ -560,8 +567,12 @@ app.get('/api/price', async (req, res) => {
     const listings = [];
 
     for (const item of items) {
-      const price = item.price && parseFloat(item.price.value);
-      if (!item.title || Number.isNaN(price)) continue;
+      // Active AUCTION listings carry their live bid under
+      // currentBidPrice, not price - price is often missing entirely for
+      // them, which is why auction items were producing $NaN before.
+      const priceField = item.price || item.currentBidPrice;
+      const price = priceField && parseFloat(priceField.value);
+      if (!item.title || typeof price !== 'number' || Number.isNaN(price)) continue;
       if (price < MIN_VALID_PRICE) continue;
       if (wantsNumberedCard && !titleHasCardNumber(item.title)) continue;
 

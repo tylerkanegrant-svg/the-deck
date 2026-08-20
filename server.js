@@ -508,12 +508,40 @@ async function fetchCardSightPricing(query) {
   }));
 
   try {
-    const url = `${CARDSIGHT_API_BASE}/pricing/search?q=${encodeURIComponent(query)}`;
-    const response = await fetch(url, { headers: { Authorization: `Bearer ${key}` } });
+    // Matches a request confirmed working directly in CardSight's own
+    // Playground (GET /v1/pricing/search?q=...&period=90d&limit=50) -
+    // our previous request was missing period/limit entirely, which is
+    // the leading suspect for why it behaved differently.
+    const searchUrl = new URL(`${CARDSIGHT_API_BASE}/pricing/search`);
+    searchUrl.searchParams.set('q', query);
+    searchUrl.searchParams.set('period', '90d');
+    searchUrl.searchParams.set('limit', '50');
+    const url = searchUrl.toString();
+    const requestHeaders = { Authorization: `Bearer ${key}` };
+
+    // TEMPORARY diagnostic requested directly: the exact URL and headers
+    // about to be sent, logged from the SAME variables passed to fetch()
+    // right below (not reconstructed), so this is guaranteed to be what
+    // actually went out - not a guess at what should have gone out. Key
+    // is masked the same safe way as the diagnostic above.
+    console.log('CardSight outgoing request:', JSON.stringify({
+      url,
+      headers: { Authorization: `Bearer ${key.length > 8 ? key.slice(0, 4) + '...' + key.slice(-4) : '(masked)'}` },
+    }));
+
+    const response = await fetch(url, { headers: requestHeaders });
+
+    // Evidence for whether a redirect silently dropped the Authorization
+    // header en route (fetch strips it on cross-origin redirects) instead
+    // of just guessing - response.url shows where the request actually
+    // ended up landing.
+    if (response.redirected) {
+      console.log(`CardSight request was redirected: ${url} -> ${response.url}`);
+    }
 
     if (!response.ok) {
       const body = await response.text().catch(() => '');
-      console.error(`CardSight pricing lookup failed: ${response.status} - ${body}`);
+      console.error(`CardSight pricing lookup failed: ${response.status} - ${body} (redirected: ${response.redirected}, final url: ${response.url})`);
       return { ok: false, reason: response.status === 401 || response.status === 403 ? 'invalid_key' : 'unavailable' };
     }
 

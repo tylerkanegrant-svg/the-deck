@@ -572,6 +572,20 @@ async function fetchCardSightPricing(query) {
 app.get('/api/price', async (req, res) => {
   const query = req.query.q;
 
+  // TEMPORARY diagnostic: a stray "]" has been showing up in the query
+  // text CardSight receives. req.originalUrl is the raw, unparsed request
+  // line exactly as it arrived (before Express's query-string parser
+  // touches anything) - comparing it against req.query.q pins down
+  // whether the corruption is already present in the incoming request
+  // itself (how it was sent/typed/pasted) or gets introduced somewhere
+  // in our own code afterward. Remove once the source is confirmed.
+  console.log('Incoming /api/price request:', JSON.stringify({
+    originalUrl: req.originalUrl,
+    parsedQueryQ: query,
+    typeofQueryQ: typeof query,
+    isArray: Array.isArray(query),
+  }));
+
   if (!query) {
     return res.json({ error: 'ebay_unavailable' });
   }

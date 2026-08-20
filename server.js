@@ -481,8 +481,31 @@ function normalizeCardSightPricing(data) {
 }
 
 async function fetchCardSightPricing(query) {
-  const key = process.env.CARDSIGHT_API_KEY;
-  if (!key) return { ok: false, reason: 'missing_key' };
+  const rawKey = process.env.CARDSIGHT_API_KEY;
+  if (!rawKey) return { ok: false, reason: 'missing_key' };
+
+  // CardSight has been responding "API key is required" even though a key
+  // is clearly being sent (a real 401 comes back, not a silent
+  // missing_key skip) - the most common cause is the value itself getting
+  // corrupted when pasted into a host's environment variable field
+  // (surrounding whitespace, or literal quote characters that were part
+  // of how the key was copied but aren't part of the actual key). Strip
+  // both defensively rather than just hoping the pasted value is clean.
+  let key = rawKey.trim();
+  const wasQuoted = /^"[\s\S]*"$/.test(key) || /^'[\s\S]*'$/.test(key);
+  if (wasQuoted) key = key.slice(1, -1).trim();
+
+  // TEMPORARY diagnostic - never logs the real key, only safe metadata
+  // about it, so a corrupted value can be confirmed (or ruled out)
+  // without exposing the secret. Remove once CardSight auth is confirmed
+  // working.
+  console.log('CardSight key diagnostic:', JSON.stringify({
+    rawLength: rawKey.length,
+    hadSurroundingWhitespace: rawKey !== rawKey.trim(),
+    wasWrappedInQuotes: wasQuoted,
+    cleanedLength: key.length,
+    preview: key.length > 8 ? `${key.slice(0, 4)}...${key.slice(-4)}` : '(too short to preview safely)',
+  }));
 
   try {
     const url = `${CARDSIGHT_API_BASE}/pricing/search?q=${encodeURIComponent(query)}`;

@@ -446,38 +446,71 @@ app.get('/api/psa-cert/:cert', async (req, res) => {
 // can never take down the rest of /api/price.
 const CARDSIGHT_API_BASE = 'https://api.cardsight.ai/v1';
 
-function splitByListingType(listings) {
-  const sold = [];
-  const asking = [];
-  (listings || []).forEach((l) => {
-    const price = typeof l.price === 'number' ? l.price : parseFloat(l.price);
-    if (Number.isNaN(price)) return;
-    if (l.listing_type === 'auction') sold.push(price);
-    else if (l.listing_type === 'fixed') asking.push(price);
-  });
-  return {
-    sold: { avg: average(sold), count: sold.length },
-    asking: { avg: average(asking), count: asking.length },
-  };
+function toAvgCount(prices) {
+  return { avg: average(prices), count: prices.length };
 }
 
-// Reshapes CardSight's { raw, graded: { COMPANY: { GRADE: {...} } } }
-// response into the same { sold, asking } pairs at every level, so the
-// rest of the code doesn't need to know CardSight's raw shape.
+// The real /v1/pricing/search response (per CardSight's docs) is a FLAT,
+// relevance-ranked list of individual listings spanning many cards - not
+// the nested { raw, graded: { COMPANY: { GRADE } } } shape assumed
+// earlier. Each listing optionally carries `grade` (omitted when
+// ungraded) and `matched_card` (omitted when CardSight's AI isn't
+// confident which card it is). Reshapes that flat list into the same
+// { raw, graded } bucket structure the rest of the code already expects,
+// plus a flat list of individual sold listings for a future sold-listings
+// UI (title/price/date/url/image are all in the docs' response fields).
 function normalizeCardSightPricing(data) {
-  const raw = splitByListingType(data.raw && data.raw.listings);
+  const rawBucket = { sold: [], asking: [] };
+  const gradedBuckets = {}; // company -> gradeValue -> { sold: [], asking: [] }
+  const soldListings = [];
 
+  (data.results || []).forEach((listing) => {
+    const price = typeof listing.price === 'number' ? listing.price : parseFloat(listing.price);
+    if (Number.isNaN(price)) return;
+
+    const isSold = listing.listing_type === 'auction'; // completed sale (bid)
+    const isAsking = listing.listing_type === 'fixed'; // asking price (ask), not confirmed sold
+    if (!isSold && !isAsking) return;
+
+    let bucket = rawBucket;
+    const grade = listing.grade;
+    if (grade && grade.company_name && grade.grade_value) {
+      if (!gradedBuckets[grade.company_name]) gradedBuckets[grade.company_name] = {};
+      if (!gradedBuckets[grade.company_name][grade.grade_value]) {
+        gradedBuckets[grade.company_name][grade.grade_value] = { sold: [], asking: [] };
+      }
+      bucket = gradedBuckets[grade.company_name][grade.grade_value];
+    }
+
+    (isSold ? bucket.sold : bucket.asking).push(price);
+
+    if (isSold) {
+      soldListings.push({
+        title: listing.title || (listing.matched_card ? listing.matched_card.name : '') || '',
+        price,
+        date: listing.date || '',
+        url: listing.url || '',
+        image: listing.image_url || '',
+        grade: grade ? `${grade.company_name} ${grade.grade_value}` : 'Raw',
+      });
+    }
+  });
+
+  const raw = { sold: toAvgCount(rawBucket.sold), asking: toAvgCount(rawBucket.asking) };
   const graded = {};
-  const gradedData = data.graded || {};
-  Object.keys(gradedData).forEach((company) => {
+  Object.keys(gradedBuckets).forEach((company) => {
     graded[company] = {};
-    const grades = gradedData[company] || {};
-    Object.keys(grades).forEach((grade) => {
-      graded[company][grade] = splitByListingType(grades[grade] && grades[grade].listings);
+    Object.keys(gradedBuckets[company]).forEach((gradeValue) => {
+      graded[company][gradeValue] = {
+        sold: toAvgCount(gradedBuckets[company][gradeValue].sold),
+        asking: toAvgCount(gradedBuckets[company][gradeValue].asking),
+      };
     });
   });
 
-  return { raw, graded };
+  soldListings.sort((a, b) => (a.date < b.date ? 1 : -1));
+
+  return { raw, graded, soldListings: soldListings.slice(0, 10) };
 }
 
 async function fetchCardSightPricing(query) {
@@ -508,16 +541,17 @@ async function fetchCardSightPricing(query) {
   }));
 
   try {
-    // Matches a request confirmed working directly in CardSight's own
-    // Playground (GET /v1/pricing/search?q=...&period=90d&limit=50) -
-    // our previous request was missing period/limit entirely, which is
-    // the leading suspect for why it behaved differently.
+    // Per CardSight's own docs for this endpoint specifically: auth is an
+    // X-Api-Key header with the raw key, NOT "Authorization: Bearer" -
+    // that mismatch (not a missing/corrupted key) is why every call was
+    // getting a misleading "API key is required" 401.
     const searchUrl = new URL(`${CARDSIGHT_API_BASE}/pricing/search`);
     searchUrl.searchParams.set('q', query);
     searchUrl.searchParams.set('period', '90d');
+    searchUrl.searchParams.set('listing_type', 'both');
     searchUrl.searchParams.set('limit', '50');
     const url = searchUrl.toString();
-    const requestHeaders = { Authorization: `Bearer ${key}` };
+    const requestHeaders = { 'X-Api-Key': key };
 
     // TEMPORARY diagnostic requested directly: the exact URL and headers
     // about to be sent, logged from the SAME variables passed to fetch()
@@ -526,7 +560,7 @@ async function fetchCardSightPricing(query) {
     // is masked the same safe way as the diagnostic above.
     console.log('CardSight outgoing request:', JSON.stringify({
       url,
-      headers: { Authorization: `Bearer ${key.length > 8 ? key.slice(0, 4) + '...' + key.slice(-4) : '(masked)'}` },
+      headers: { 'X-Api-Key': key.length > 8 ? key.slice(0, 4) + '...' + key.slice(-4) : '(masked)' },
     }));
 
     const response = await fetch(url, { headers: requestHeaders });
@@ -545,20 +579,19 @@ async function fetchCardSightPricing(query) {
       return { ok: false, reason: response.status === 401 || response.status === 403 ? 'invalid_key' : 'unavailable' };
     }
 
-    let data = await response.json();
+    const data = await response.json();
     // TEMPORARY: logs the exact, unprocessed response CardSight sends back
-    // for every search - real sold data has never shown up on any tested
-    // card, so this is here to see whether CardSight is actually returning
-    // sale listings at all, or whether the response shape just doesn't
-    // match what normalizeCardSightPricing() expects. Remove once that's
-    // confirmed one way or the other.
+    // for every search. Keeping this until real sold data has been
+    // confirmed showing up correctly end-to-end with the corrected
+    // X-Api-Key auth and results-array parsing.
     console.log(`CardSight raw response for "${query}":`, JSON.stringify(data));
 
-    // Defensive: handle either a single card object or a list of matches
-    // (the search endpoint's exact shape for multiple matches isn't
-    // documented here) by taking the first result if it's an array.
-    if (Array.isArray(data)) data = data[0];
-    if (!data || (!data.raw && !data.graded)) {
+    // Per the docs, `results` is always an array (an empty one just means
+    // zero matching listings, which is a normal outcome, not an error -
+    // the stats builder in /api/price already falls back to eBay data
+    // when a bucket has no CardSight sold data). Only a missing/malformed
+    // results field counts as "no_data".
+    if (!data || !Array.isArray(data.results)) {
       return { ok: false, reason: 'no_data' };
     }
 
@@ -683,7 +716,20 @@ app.get('/api/price', async (req, res) => {
         return { avg: cardsightBucket.sold.avg, asking: cardsightBucket.asking.avg, source: 'sold' };
       }
       const ebayAvg = average(ebayPrices);
-      return { avg: ebayAvg, asking: null, source: ebayAvg !== null ? 'ebay_listings' : null };
+      if (ebayAvg !== null) {
+        // eBay's own average is the primary number here, but still surface
+        // CardSight's asking price alongside it if we have one, instead of
+        // just dropping it.
+        return { avg: ebayAvg, asking: (cardsightBucket && cardsightBucket.asking.avg) ?? null, source: 'ebay_listings' };
+      }
+      // No sold price and no eBay listings, but CardSight does have an
+      // asking price for this bucket - better to show that (clearly
+      // labeled as asking, same as the eBay-fallback case) than "no data"
+      // when we actually have a real number.
+      if (cardsightBucket && cardsightBucket.asking.avg !== null) {
+        return { avg: cardsightBucket.asking.avg, asking: null, source: 'cardsight_asking' };
+      }
+      return { avg: null, asking: null, source: null };
     }
 
     const psaGraded = (cardsight.ok && cardsight.pricing.graded.PSA) || {};

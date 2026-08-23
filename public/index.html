@@ -336,13 +336,15 @@ input:focus,select:focus{border-color:var(--gold)!important}
       sp.style.transition='opacity 0.5s ease';sp.style.opacity='0';
       setTimeout(function(){
         sp.style.display='none';
-        // Check if already logged in - if not, show auth screen
-        var email=null;try{email=localStorage.getItem('tdCurrentUser');}catch(e){}
-        var stored=null;try{if(email)stored=localStorage.getItem('tdUser_'+email);}catch(e){}
-        if(!stored){
-          var auth=document.getElementById('authScreen');
-          if(auth){auth.style.opacity='0';auth.style.display='flex';setTimeout(function(){auth.style.transition='opacity 0.4s ease';auth.style.opacity='1';},20);}
-        }
+        // Check if already logged in (real backend session) - if not, show
+        // the auth screen once we know for sure (session check may still
+        // be in flight from page load).
+        Promise.resolve(_sessionReady).then(function(){
+          if(!_user){
+            var auth=document.getElementById('authScreen');
+            if(auth){auth.style.opacity='0';auth.style.display='flex';setTimeout(function(){auth.style.transition='opacity 0.4s ease';auth.style.opacity='1';},20);}
+          }
+        });
       },520);
     },2400);
   })();
@@ -686,7 +688,7 @@ function initLeafletMap(){
 
       <!-- Trust note -->
       <div style="margin-top:24px;text-align:center;font-size:10px;color:var(--gray);font-family:'DM Mono',monospace;letter-spacing:0.06em">
-        &#128274; Secured &bull; Your data stays on your device
+        &#128274; Secured &bull; Your password is encrypted
       </div>
     </div>
   </div>
@@ -2969,10 +2971,64 @@ function runAiTrustCheck(a,sr){
 }
 
 // ===== AUTH =====
+// Real accounts, backed by the server (bcrypt password hashing + a JWT
+// session token) - not just something stored in this browser. The token
+// is the one source of truth for "am I logged in," shared with
+// admin.html so there's a single real login instead of two systems.
 var _user = null;
+var TOKEN_KEY = 'deckToken';
 
 function authStore(key, val){ try{ localStorage.setItem(key, val); }catch(e){ console.warn('Could not save account info - localStorage may be blocked, full, or unavailable (e.g. private browsing / an embedded browser):', e.message); } }
 function authGet(key){ try{ return localStorage.getItem(key); }catch(e){ console.warn('Could not read account info - localStorage may be blocked or unavailable:', e.message); return null; } }
+
+function getToken(){ return authGet(TOKEN_KEY); }
+function setToken(t){ authStore(TOKEN_KEY, t); }
+function clearToken(){ try{ localStorage.removeItem(TOKEN_KEY); }catch(e){} }
+
+// Username/avatar are cosmetic only - the server doesn't store them, so
+// they're kept locally (per email) and merged onto whatever /api/me
+// returns. Losing this on a new device just means picking a name again,
+// nothing security-sensitive.
+function loadProfile(email){ try{ var raw=authGet('tdProfile_'+email); return raw?JSON.parse(raw):null; }catch(e){ return null; } }
+function saveProfile(email, profile){ authStore('tdProfile_'+email, JSON.stringify(profile)); }
+
+function buildUser(me){
+  var profile=loadProfile(me.email)||{};
+  return {
+    email: me.email,
+    name: profile.name || me.email.split('@')[0],
+    avatar: profile.avatar || '',
+    plan: me.plan,
+    trial_ends_at: me.trial_ends_at,
+    referral_code: me.referral_code,
+    weekly_usage: me.weekly_usage,
+  };
+}
+
+// Restores a session from a saved token on page load, so a refresh
+// doesn't force signing in again. Runs once at script load; the splash
+// screen's end-of-animation check awaits this before deciding whether to
+// show the sign-in screen.
+async function restoreSession(){
+  var token=getToken();
+  if(!token) return;
+  try{
+    var res=await fetch('/api/me',{headers:{Authorization:'Bearer '+token}});
+    if(!res.ok){ clearToken(); return; }
+    var data=await res.json();
+    _user=buildUser(data);
+    var screen=document.getElementById('authScreen');
+    if(screen) screen.style.display='none';
+    setTimeout(updateAccountUI,100);
+  }catch(e){
+    // Network hiccup while verifying - leave the token in place (don't
+    // sign the user out over a transient failure) but don't fabricate a
+    // logged-in state either; the splash-end check will show the sign-in
+    // screen since _user never got set here.
+    console.warn('Could not verify saved session:', e.message);
+  }
+}
+var _sessionReady = restoreSession();
 
 function switchAuthTab(tab){
   var si=document.getElementById('authSignIn');
@@ -2998,35 +3054,63 @@ function showAuthErr(msg){
   if(el){el.textContent=msg;el.style.display='block';}
 }
 
-function doSignUp(){
+async function doSignUp(){
   var name=(document.getElementById('suName').value||'').trim();
   var email=(document.getElementById('suEmail').value||'').trim();
   var pass=(document.getElementById('suPass').value||'').trim();
   if(!name){showAuthErr('Please enter a username.');return;}
   if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){showAuthErr('Please enter a valid email.');return;}
   if(pass.length<6){showAuthErr('Password must be at least 6 characters.');return;}
-  // Check if email already exists
-  var existing=authGet('tdUser_'+email);
-  if(existing){showAuthErr('An account with this email already exists.');return;}
-  // Save account
-  var account={name:name,email:email,pass:pass,avatar:''};
-  authStore('tdUser_'+email, JSON.stringify(account));
-  authStore('tdCurrentUser', email);
-  _user=account;
-  onSignedIn();
+
+  var btn=document.querySelector('#authSignUp button');
+  if(btn){btn.disabled=true;btn.textContent='Creating Account...';}
+  try{
+    var res=await fetch('/api/signup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:email,password:pass})});
+    var data=await res.json().catch(function(){return{};});
+    if(!res.ok||!data.token){
+      if(data.error==='email_taken') showAuthErr('An account with this email already exists.');
+      else if(data.error==='invalid_email') showAuthErr('Please enter a valid email.');
+      else if(data.error==='invalid_password') showAuthErr('Password must be at least 6 characters.');
+      else showAuthErr('Could not create your account. Please try again.');
+      return;
+    }
+    setToken(data.token);
+    saveProfile(email.trim().toLowerCase(), {name:name, avatar:''});
+    var meRes=await fetch('/api/me',{headers:{Authorization:'Bearer '+data.token}});
+    var meData=await meRes.json();
+    _user=buildUser(meData);
+    onSignedIn();
+  }catch(e){
+    showAuthErr('Could not reach the server. Check your connection and try again.');
+  }finally{
+    if(btn){btn.disabled=false;btn.textContent='Create Account';}
+  }
 }
 
-function doSignIn(){
+async function doSignIn(){
   var email=(document.getElementById('siEmail').value||'').trim();
   var pass=(document.getElementById('siPass').value||'').trim();
   if(!email||!pass){showAuthErr('Please enter your email and password.');return;}
-  var stored=authGet('tdUser_'+email);
-  if(!stored){showAuthErr('No account found with this email.');return;}
-  var account=JSON.parse(stored);
-  if(account.pass!==pass){showAuthErr('Incorrect password.');return;}
-  authStore('tdCurrentUser', email);
-  _user=account;
-  onSignedIn();
+
+  var btn=document.querySelector('#authSignIn button');
+  if(btn){btn.disabled=true;btn.textContent='Signing In...';}
+  try{
+    var res=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:email,password:pass})});
+    var data=await res.json().catch(function(){return{};});
+    if(!res.ok||!data.token){
+      showAuthErr('Incorrect email or password.');
+      return;
+    }
+    setToken(data.token);
+    var meRes=await fetch('/api/me',{headers:{Authorization:'Bearer '+data.token}});
+    var meData=await meRes.json();
+    _user=buildUser(meData);
+    onSignedIn();
+  }catch(e){
+    showAuthErr('Could not reach the server. Check your connection and try again.');
+  }finally{
+    if(btn){btn.disabled=false;btn.textContent='Sign In';}
+  }
 }
 
 function onSignedIn(){
@@ -3075,7 +3159,7 @@ function saveUsername(){
   var val=(document.getElementById('accountNameInput').value||'').trim();
   if(!val){alert('Please enter a username.');return;}
   _user.name=val;
-  authStore('tdUser_'+_user.email, JSON.stringify(_user));
+  saveProfile(_user.email, {name:_user.name, avatar:_user.avatar||''});
   updateAccountUI();
   closeAccount();
 }
@@ -3085,34 +3169,18 @@ function changeAvatar(inp){
   var reader=new FileReader();
   reader.onload=function(e){
     _user.avatar=e.target.result;
-    authStore('tdUser_'+_user.email, JSON.stringify(_user));
+    saveProfile(_user.email, {name:_user.name, avatar:_user.avatar});
     updateAccountUI();
   };
   reader.readAsDataURL(inp.files[0]);
 }
 
 function doSignOut(){
-  authStore('tdCurrentUser','');
+  clearToken();
   _user=null;
   closeAccount();
   document.getElementById('authScreen').style.display='flex';
 }
-
-// Check if already signed in on load
-(function(){
-  var email=authGet('tdCurrentUser');
-  if(email){
-    var stored=authGet('tdUser_'+email);
-    if(stored){
-      try{
-        _user=JSON.parse(stored);
-        var screen=document.getElementById('authScreen');
-        if(screen)screen.style.display='none';
-        setTimeout(updateAccountUI,100);
-      }catch(e){}
-    }
-  }
-})();
 // ===== COLLECTION =====
 var _collection=[
   {name:'LaMelo Ball Auto /10',set:'2020 Prizm',grade:'PSA 10',paid:4200,value:9800},

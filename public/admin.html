@@ -90,7 +90,7 @@
   .plan-pro { color: var(--green); font-weight: 700; }
   .access-denied { text-align: center; padding: 60px 20px; }
   .access-denied .n { font-size: 40px; margin-bottom: 12px; }
-  #deniedBox, #dashboard, #userPanel { display: none; }
+  #loadingBox, #deniedBox, #dashboard, #userPanel { display: none; }
   .modal-backdrop {
     position: fixed; inset: 0; background: rgba(0,0,0,0.6);
     display: flex; align-items: flex-start; justify-content: center;
@@ -104,25 +104,20 @@
 </head>
 <body>
 
-<div id="loginBox" class="card" style="max-width:360px">
-  <h1>The Deck Admin</h1>
-  <p class="sub">Sign in with the admin account to view the dashboard.</p>
-  <input id="email" type="email" placeholder="Email" autocomplete="username">
-  <input id="password" type="password" placeholder="Password" autocomplete="current-password">
-  <button id="loginBtn" onclick="doLogin()">Sign In</button>
-  <div id="loginError" class="error"></div>
+<div id="loadingBox" class="card" style="max-width:360px;text-align:center">
+  <p class="sub" style="margin:0">Checking your session...</p>
 </div>
 
 <div id="deniedBox" class="access-denied">
   <div class="n">&#128274;</div>
   <h1>Access Denied</h1>
   <p class="sub">This account isn't allowed to view the admin dashboard.</p>
-  <button onclick="logout()">Sign In as Someone Else</button>
+  <button onclick="location.href='/'">Back to The Deck</button>
 </div>
 
 <div id="dashboard">
   <h1>The Deck Admin</h1>
-  <p class="sub">Live account &amp; usage stats. <span style="cursor:pointer;text-decoration:underline;color:var(--gold)" onclick="logout()">Sign out</span></p>
+  <p class="sub">Live account &amp; usage stats. <span style="cursor:pointer;text-decoration:underline;color:var(--gold)" onclick="location.href='/'">Back to The Deck</span></p>
 
   <div class="stat-grid">
     <div class="stat-box"><div class="n" id="statTotalUsers">-</div><div class="l">Total Users</div></div>
@@ -188,66 +183,29 @@
 </div>
 
 <script>
-var TOKEN_KEY = 'deckAdminToken';
+// Same key the main app (index.html) writes to on sign-in - there is only
+// one real login for The Deck. This page never shows its own login form;
+// it just reads whatever session already exists and checks with the
+// server whether that account is allowed to be here.
+var TOKEN_KEY = 'deckToken';
 
 function getToken() { return localStorage.getItem(TOKEN_KEY); }
-function setToken(t) { localStorage.setItem(TOKEN_KEY, t); }
 function clearToken() { localStorage.removeItem(TOKEN_KEY); }
 
-function showLogin() {
-  document.getElementById('loginBox').style.display = 'block';
+function showLoading() {
+  document.getElementById('loadingBox').style.display = 'block';
   document.getElementById('deniedBox').style.display = 'none';
   document.getElementById('dashboard').style.display = 'none';
 }
 function showDenied() {
-  document.getElementById('loginBox').style.display = 'none';
+  document.getElementById('loadingBox').style.display = 'none';
   document.getElementById('deniedBox').style.display = 'block';
   document.getElementById('dashboard').style.display = 'none';
 }
 function showDashboard() {
-  document.getElementById('loginBox').style.display = 'none';
+  document.getElementById('loadingBox').style.display = 'none';
   document.getElementById('deniedBox').style.display = 'none';
   document.getElementById('dashboard').style.display = 'block';
-}
-
-function logout() {
-  clearToken();
-  showLogin();
-}
-
-async function doLogin() {
-  var email = document.getElementById('email').value.trim();
-  var password = document.getElementById('password').value;
-  var errEl = document.getElementById('loginError');
-  var btn = document.getElementById('loginBtn');
-  errEl.textContent = '';
-
-  if (!email || !password) {
-    errEl.textContent = 'Enter an email and password.';
-    return;
-  }
-
-  btn.disabled = true;
-  btn.textContent = 'Signing in...';
-  try {
-    var res = await fetch('/api/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email: email, password: password })
-    });
-    var data = await res.json();
-    if (!res.ok || !data.token) {
-      errEl.textContent = 'Incorrect email or password.';
-      return;
-    }
-    setToken(data.token);
-    await loadDashboard();
-  } catch (e) {
-    errEl.textContent = 'Could not reach the server. Is it running?';
-  } finally {
-    btn.disabled = false;
-    btn.textContent = 'Sign In';
-  }
 }
 
 function renderBarChart(container, rows, labelKey, countKey, maxBars) {
@@ -314,8 +272,11 @@ function renderErrors(errors) {
 var usersById = {};
 
 async function loadDashboard() {
+  // No separate admin login - this page only ever trusts the same
+  // session The Deck's normal sign-in already created. Not logged in at
+  // all means there's nothing to check here; send them to sign in first.
   var token = getToken();
-  if (!token) { showLogin(); return; }
+  if (!token) { location.href = '/'; return; }
 
   var res;
   try {
@@ -323,23 +284,27 @@ async function loadDashboard() {
       headers: { Authorization: 'Bearer ' + token }
     });
   } catch (e) {
-    document.getElementById('loginError').textContent = 'Could not reach the server.';
-    showLogin();
+    showLoading();
+    document.querySelector('#loadingBox .sub').textContent = 'Could not reach the server. Refresh to try again.';
     return;
   }
 
   if (res.status === 401) {
+    // Token is missing/expired/invalid - not a "wrong account" situation,
+    // just not signed in (here) at all, so send them to sign in.
     clearToken();
-    showLogin();
+    location.href = '/';
     return;
   }
   if (res.status === 403) {
+    // Signed in, but not as admin@thedeck.com - this is the real lock:
+    // no page reachable without that exact account, no matter the URL.
     showDenied();
     return;
   }
   if (!res.ok) {
-    document.getElementById('loginError').textContent = 'Something went wrong loading the dashboard.';
-    showLogin();
+    showLoading();
+    document.querySelector('#loadingBox .sub').textContent = 'Something went wrong loading the dashboard.';
     return;
   }
 
@@ -436,12 +401,11 @@ function closeUserPanel() {
   document.getElementById('userPanel').style.display = 'none';
 }
 
-// If we already have a saved token (e.g. page refresh), try it immediately.
-if (getToken()) {
-  loadDashboard();
-} else {
-  showLogin();
-}
+// No login form on this page at all - either there's already a session
+// from signing in at "/" and we check it's the admin account, or there
+// isn't one and we send them there to sign in.
+showLoading();
+loadDashboard();
 </script>
 </body>
 </html>

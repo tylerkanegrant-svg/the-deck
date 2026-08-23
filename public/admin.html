@@ -13,6 +13,7 @@
     --gray: #999;
     --gold: #c9a84c;
     --danger: #e05555;
+    --green: #4caf7d;
   }
   * { box-sizing: border-box; }
   body {
@@ -64,18 +65,41 @@
   }
   .stat-box .n { font-size: 26px; font-weight: 800; color: var(--gold); }
   .stat-box .l { font-size: 11px; color: var(--gray); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 2px; }
+  .stat-box .note { font-size: 10px; color: var(--gray); margin-top: 4px; }
   h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--gray); margin: 0 0 12px; }
+  h2 .tag { text-transform: none; letter-spacing: 0; font-size: 11px; color: var(--bg); background: var(--gray); padding: 1px 6px; border-radius: 4px; margin-left: 8px; }
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
   th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); }
   th { color: var(--gray); font-weight: 600; font-size: 11px; text-transform: uppercase; }
+  tr.clickable { cursor: pointer; }
+  tr.clickable:hover td { background: #1e1e24; }
   .bar-row { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; font-size: 11px; }
   .bar-label { width: 70px; color: var(--gray); flex-shrink: 0; }
   .bar-track { flex: 1; background: #000; border-radius: 4px; height: 14px; overflow: hidden; }
   .bar-fill { background: var(--gold); height: 100%; }
   .bar-count { width: 30px; text-align: right; color: var(--gray); flex-shrink: 0; }
+  .limit-row { margin-bottom: 14px; }
+  .limit-head { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 4px; }
+  .limit-head .name { text-transform: uppercase; letter-spacing: 0.05em; color: var(--text); font-weight: 700; }
+  .limit-head .nums { color: var(--gray); }
+  .limit-track { background: #000; border-radius: 4px; height: 10px; overflow: hidden; }
+  .limit-fill { height: 100%; background: var(--green); }
+  .limit-fill.warn { background: var(--gold); }
+  .limit-fill.danger { background: var(--danger); }
+  .limit-note { font-size: 10px; color: var(--gray); margin-top: 3px; }
+  .plan-pro { color: var(--green); font-weight: 700; }
   .access-denied { text-align: center; padding: 60px 20px; }
   .access-denied .n { font-size: 40px; margin-bottom: 12px; }
-  #deniedBox, #dashboard { display: none; }
+  #deniedBox, #dashboard, #userPanel { display: none; }
+  .modal-backdrop {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+    display: flex; align-items: flex-start; justify-content: center;
+    padding: 40px 16px; overflow-y: auto; z-index: 10;
+  }
+  .modal { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 20px; max-width: 560px; width: 100%; }
+  .modal h2 { margin-top: 0; }
+  .modal .close { float: right; cursor: pointer; color: var(--gray); font-size: 13px; }
+  .empty-note { color: var(--gray); font-size: 12px; }
 </style>
 </head>
 <body>
@@ -103,7 +127,14 @@
   <div class="stat-grid">
     <div class="stat-box"><div class="n" id="statTotalUsers">-</div><div class="l">Total Users</div></div>
     <div class="stat-box"><div class="n" id="statDAU">-</div><div class="l">Active (24h)</div></div>
+    <div class="stat-box"><div class="n" id="statActive7d">-</div><div class="l">Active (7d)</div></div>
     <div class="stat-box"><div class="n" id="statAvgUses">-</div><div class="l">Avg Uses / Active User</div></div>
+    <div class="stat-box"><div class="n" id="statPayingPct">-</div><div class="l">Paying Subscribers</div><div class="note" id="statPayingNote"></div></div>
+  </div>
+
+  <div class="card">
+    <h2>Usage - Last 30 Days <span class="tag">searches &amp; scans</span></h2>
+    <div id="usageChart"></div>
   </div>
 
   <div class="card">
@@ -117,6 +148,20 @@
   </div>
 
   <div class="card">
+    <h2>API Usage vs. Free-Tier Limits</h2>
+    <p class="empty-note" style="margin-top:-4px;margin-bottom:12px">Limits shown are estimates set via env vars (EBAY_DAILY_LIMIT, CARDSIGHT_MONTHLY_LIMIT, PSA_DAILY_LIMIT) - update them once real numbers are confirmed from each provider's dashboard.</p>
+    <div id="apiUsageBox"></div>
+  </div>
+
+  <div class="card">
+    <h2>Recent Errors <span class="tag">last 20</span></h2>
+    <table>
+      <thead><tr><th>When</th><th>Where</th><th>Message</th></tr></thead>
+      <tbody id="errorsBody"></tbody>
+    </table>
+  </div>
+
+  <div class="card">
     <h2>Top Searched Cards</h2>
     <table>
       <thead><tr><th>#</th><th>Search Term</th><th>Count</th></tr></thead>
@@ -125,11 +170,20 @@
   </div>
 
   <div class="card">
-    <h2>Users</h2>
+    <h2>Users <span class="tag" id="usersCountTag"></span></h2>
+    <p class="empty-note" style="margin-top:-4px;margin-bottom:12px">Click a row to view that account's detail.</p>
     <table>
       <thead><tr><th>Email</th><th>Plan</th><th>Signed Up</th><th>Total Uses</th><th>Last Active</th></tr></thead>
       <tbody id="usersBody"></tbody>
     </table>
+  </div>
+</div>
+
+<div id="userPanel" class="modal-backdrop" onclick="if(event.target===this) closeUserPanel()">
+  <div class="modal">
+    <span class="close" onclick="closeUserPanel()">Close &times;</span>
+    <h2 id="userPanelTitle">User</h2>
+    <div id="userPanelBody"></div>
   </div>
 </div>
 
@@ -216,6 +270,49 @@ function fmtDate(iso) {
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
+function fmtDateTime(iso) {
+  if (!iso) return '-';
+  var d = new Date(iso);
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ' ' +
+    d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+}
+
+function escapeHtml(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+  });
+}
+
+function renderApiUsage(apiUsage) {
+  var providerNames = { ebay: 'eBay Browse API', cardsight: 'CardSight', psa: 'PSA Cert Lookup' };
+  var box = document.getElementById('apiUsageBox');
+  box.innerHTML = Object.keys(apiUsage).map(function (provider) {
+    var u = apiUsage[provider];
+    var pct = Math.min(100, u.percent);
+    var cls = pct >= 90 ? 'danger' : (pct >= 70 ? 'warn' : '');
+    return '<div class="limit-row">'
+      + '<div class="limit-head"><span class="name">' + (providerNames[provider] || provider) + '</span>'
+      + '<span class="nums">' + u.count + ' / ' + u.limit + ' ' + u.label + ' (' + u.percent + '%)</span></div>'
+      + '<div class="limit-track"><div class="limit-fill ' + cls + '" style="width:' + pct + '%"></div></div>'
+      + '<div class="limit-note">' + u.failures + ' failed call' + (u.failures === 1 ? '' : 's') + ' in this window</div>'
+      + '</div>';
+  }).join('');
+}
+
+function renderErrors(errors) {
+  var body = document.getElementById('errorsBody');
+  if (!errors.length) {
+    body.innerHTML = '<tr><td colspan="3" style="color:var(--gray)">No errors recorded. &#127881;</td></tr>';
+    return;
+  }
+  body.innerHTML = errors.map(function (e) {
+    return '<tr><td>' + fmtDateTime(e.created_at) + '</td><td>' + escapeHtml(e.context)
+      + '</td><td>' + escapeHtml(e.message) + '</td></tr>';
+  }).join('');
+}
+
+var usersById = {};
+
 async function loadDashboard() {
   var token = getToken();
   if (!token) { showLogin(); return; }
@@ -250,8 +347,14 @@ async function loadDashboard() {
 
   document.getElementById('statTotalUsers').textContent = data.totalUsers;
   document.getElementById('statDAU').textContent = data.dailyActiveUsers;
+  document.getElementById('statActive7d').textContent = data.activity.active7d;
   document.getElementById('statAvgUses').textContent = data.avgUsesPerActiveUser;
+  document.getElementById('statPayingPct').textContent = data.subscriptionStats.payingPercent + '%';
+  document.getElementById('statPayingNote').textContent = data.subscriptionStats.payingUsers > 0
+    ? data.subscriptionStats.payingUsers + ' paying user' + (data.subscriptionStats.payingUsers === 1 ? '' : 's')
+    : 'Stripe not wired up yet';
 
+  renderBarChart(document.getElementById('usageChart'), data.usagePerDay, 'date', 'count', 14);
   renderBarChart(document.getElementById('signupChart'), data.signupsPerDay, 'date', 'count', 14);
 
   var featureRows = Object.keys(data.featureUsage).map(function (k) {
@@ -259,26 +362,78 @@ async function loadDashboard() {
   });
   renderBarChart(document.getElementById('featureChart'), featureRows, 'feature', 'count');
 
+  renderApiUsage(data.apiUsage);
+  renderErrors(data.recentErrors);
+
   var topSearchesBody = document.getElementById('topSearchesBody');
   if (!data.topSearches.length) {
     topSearchesBody.innerHTML = '<tr><td colspan="3" style="color:var(--gray)">No searches recorded yet.</td></tr>';
   } else {
     topSearchesBody.innerHTML = data.topSearches.map(function (row, i) {
-      return '<tr><td>' + (i + 1) + '</td><td>' + row.term + '</td><td>' + row.count + '</td></tr>';
+      return '<tr><td>' + (i + 1) + '</td><td>' + escapeHtml(row.term) + '</td><td>' + row.count + '</td></tr>';
     }).join('');
   }
 
+  document.getElementById('usersCountTag').textContent = data.users.length + ' total';
+  usersById = {};
   var usersBody = document.getElementById('usersBody');
   if (!data.users.length) {
     usersBody.innerHTML = '<tr><td colspan="5" style="color:var(--gray)">No users yet.</td></tr>';
   } else {
     usersBody.innerHTML = data.users.map(function (u) {
-      return '<tr><td>' + u.email + '</td><td>' + u.plan + '</td><td>' + fmtDate(u.created_at)
+      usersById[u.id] = u;
+      var planHtml = u.plan === 'pro' ? '<span class="plan-pro">pro</span>' : escapeHtml(u.plan);
+      return '<tr class="clickable" onclick="openUserPanel(' + u.id + ')"><td>' + escapeHtml(u.email) + '</td><td>' + planHtml + '</td><td>' + fmtDate(u.created_at)
         + '</td><td>' + u.total_uses + '</td><td>' + fmtDate(u.last_active) + '</td></tr>';
     }).join('');
   }
 
   showDashboard();
+}
+
+async function openUserPanel(id) {
+  var token = getToken();
+  var panel = document.getElementById('userPanel');
+  var body = document.getElementById('userPanelBody');
+  var summary = usersById[id];
+  document.getElementById('userPanelTitle').textContent = summary ? summary.email : 'User';
+  body.innerHTML = '<p class="empty-note">Loading...</p>';
+  panel.style.display = 'flex';
+
+  try {
+    var res = await fetch('/api/admin/user/' + id, { headers: { Authorization: 'Bearer ' + token } });
+    if (!res.ok) {
+      body.innerHTML = '<p class="error">Could not load this account.</p>';
+      return;
+    }
+    var data = await res.json();
+    var u = data.user;
+
+    var featureRows = Object.keys(data.usageByFeature).map(function (k) {
+      return '<tr><td>' + escapeHtml(k) + '</td><td>' + data.usageByFeature[k] + '</td></tr>';
+    }).join('');
+
+    var historyRows = data.recentUsage.length
+      ? data.recentUsage.map(function (r) {
+          return '<tr><td>' + fmtDateTime(r.created_at) + '</td><td>' + escapeHtml(r.feature) + '</td><td>' + escapeHtml(r.detail || '-') + '</td></tr>';
+        }).join('')
+      : '<tr><td colspan="3" class="empty-note">No activity yet.</td></tr>';
+
+    body.innerHTML =
+      '<p class="empty-note">Plan: <b style="color:var(--text)">' + escapeHtml(u.plan) + '</b>'
+      + ' &middot; Joined ' + fmtDate(u.created_at)
+      + ' &middot; Referral code ' + escapeHtml(u.referral_code) + '</p>'
+      + '<h2 style="margin-top:16px">Usage by Feature</h2>'
+      + '<table><thead><tr><th>Feature</th><th>Count</th></tr></thead><tbody>' + featureRows + '</tbody></table>'
+      + '<h2 style="margin-top:16px">Recent Activity <span class="tag">last 50</span></h2>'
+      + '<table><thead><tr><th>When</th><th>Feature</th><th>Detail</th></tr></thead><tbody>' + historyRows + '</tbody></table>';
+  } catch (e) {
+    body.innerHTML = '<p class="error">Could not reach the server.</p>';
+  }
+}
+
+function closeUserPanel() {
+  document.getElementById('userPanel').style.display = 'none';
 }
 
 // If we already have a saved token (e.g. page refresh), try it immediately.

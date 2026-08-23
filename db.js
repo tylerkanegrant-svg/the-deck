@@ -27,6 +27,21 @@ db.exec(`
     created_at TEXT NOT NULL,
     FOREIGN KEY(user_id) REFERENCES users(id)
   );
+
+  CREATE TABLE IF NOT EXISTS errors (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    context TEXT NOT NULL,
+    message TEXT NOT NULL,
+    detail TEXT,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS api_calls (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider TEXT NOT NULL,
+    success INTEGER NOT NULL,
+    created_at TEXT NOT NULL
+  );
 `);
 // "detail" isn't in the original spec's usage table, but it's needed to
 // remember *what* was searched so the admin dashboard can show the top

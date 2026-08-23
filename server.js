@@ -30,6 +30,40 @@ const VALID_FEATURES = ['grading', 'valuing', 'auction', 'search'];
 const FREE_ALLOWED_FEATURES = ['grading', 'valuing'];
 const FREE_WEEKLY_LIMIT = 10;
 
+// Free-tier request limits for each outside API, so the admin dashboard can
+// show "how close are we to getting cut off." These are NOT confirmed real
+// numbers from eBay/CardSight/PSA's own dashboards - they're placeholder
+// defaults, overridable via env vars, until the real limits are plugged in.
+const API_LIMITS = {
+  ebay: { limit: Number(process.env.EBAY_DAILY_LIMIT) || 5000, windowHours: 24, label: 'per day' },
+  cardsight: { limit: Number(process.env.CARDSIGHT_MONTHLY_LIMIT) || 1000, windowHours: 24 * 30, label: 'per month' },
+  psa: { limit: Number(process.env.PSA_DAILY_LIMIT) || 100, windowHours: 24, label: 'per day' },
+};
+
+// Records a real outbound call to an external API, so the admin dashboard
+// can show usage against that provider's free-tier limit. Never throws -
+// a logging failure should never take down the request that triggered it.
+function logApiCall(provider, success) {
+  try {
+    db.prepare('INSERT INTO api_calls (provider, success, created_at) VALUES (?, ?, ?)')
+      .run(provider, success ? 1 : 0, new Date().toISOString());
+  } catch (err) {
+    console.error('logApiCall failed:', err.message);
+  }
+}
+
+// Persists a real failure so the admin dashboard can show it, instead of it
+// only ever existing in server console logs nobody's watching. Never
+// throws - called from inside catch blocks, so it must not itself fail.
+function logError(context, message, detail) {
+  try {
+    db.prepare('INSERT INTO errors (context, message, detail, created_at) VALUES (?, ?, ?, ?)')
+      .run(context, String(message).slice(0, 500), detail ? String(detail).slice(0, 1000) : null, new Date().toISOString());
+  } catch (err) {
+    console.error('logError failed:', err.message);
+  }
+}
+
 function signToken(user) {
   return jwt.sign({ userId: user.id, email: user.email }, JWT_SECRET, { expiresIn: '30d' });
 }
@@ -177,11 +211,15 @@ function buildSearchUrl(query, categoryId, filter, limit) {
 async function fetchItems(url, headers, label) {
   try {
     const r = await fetch(url, { headers });
+    logApiCall('ebay', r.ok);
     if (r.ok) return { ok: true, items: (await r.json()).itemSummaries || [] };
-    console.error(`${label} failed: ${r.status} - ${await r.text().catch(() => '')}`);
+    const body = await r.text().catch(() => '');
+    console.error(`${label} failed: ${r.status} - ${body}`);
+    logError('ebay_search', `${label}: HTTP ${r.status}`, body);
     return { ok: false, items: [] };
   } catch (e) {
     console.error(`${label} errored:`, e.message);
+    logError('ebay_search', `${label}: ${e.message}`);
     return { ok: false, items: [] };
   }
 }
@@ -361,6 +399,7 @@ app.get('/api/admin/stats', requireAuth, requireAdmin, (req, res) => {
 
   const users = db.prepare(`
     SELECT
+      u.id,
       u.email,
       u.plan,
       u.created_at,
@@ -370,7 +409,106 @@ app.get('/api/admin/stats', requireAuth, requireAdmin, (req, res) => {
     ORDER BY u.created_at DESC
   `).all();
 
-  res.json({ totalUsers, dailyActiveUsers, avgUsesPerActiveUser, signupsPerDay, featureUsage, topSearches, users });
+  // Usage (searches/scans) per day, last 30 days - same zero-filled shape
+  // as signupsPerDay above, so the admin page can chart activity trends,
+  // not just signups.
+  const usageRows = db.prepare(`
+    SELECT substr(created_at, 1, 10) as day, COUNT(*) as count
+    FROM usage
+    WHERE created_at >= ?
+    GROUP BY day
+  `).all(thirtyDaysAgo);
+  const usageByDay = {};
+  usageRows.forEach((r) => { usageByDay[r.day] = r.count; });
+  const usagePerDay = [];
+  for (let i = 29; i >= 0; i--) {
+    const day = new Date(Date.now() - i * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    usagePerDay.push({ date: day, count: usageByDay[day] || 0 });
+  }
+
+  // How many calls each outside API has taken in its own tracking window,
+  // against that provider's free-tier limit - so we can see we're getting
+  // close BEFORE we get cut off, not after.
+  const apiUsage = {};
+  Object.keys(API_LIMITS).forEach((provider) => {
+    const cfg = API_LIMITS[provider];
+    const windowStart = new Date(Date.now() - cfg.windowHours * 60 * 60 * 1000).toISOString();
+    const row = db.prepare(
+      'SELECT COUNT(*) as count, SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) as failures FROM api_calls WHERE provider = ? AND created_at >= ?'
+    ).get(provider, windowStart);
+    apiUsage[provider] = {
+      count: row.count,
+      failures: row.failures || 0,
+      limit: cfg.limit,
+      label: cfg.label,
+      percent: cfg.limit > 0 ? Math.round((row.count / cfg.limit) * 1000) / 10 : 0,
+    };
+  });
+
+  const recentErrors = db.prepare(`
+    SELECT context, message, detail, created_at
+    FROM errors
+    ORDER BY created_at DESC
+    LIMIT 20
+  `).all();
+
+  const payingUsers = db.prepare("SELECT COUNT(*) as count FROM users WHERE plan = 'pro'").get().count;
+  const subscriptionStats = {
+    payingUsers,
+    totalUsers,
+    // Stripe subscriptions aren't wired up yet, so this is always 0% for
+    // now - it's honest, not a placeholder number, and starts reflecting
+    // real subscribers automatically the moment plan='pro' rows exist.
+    payingPercent: totalUsers > 0 ? Math.round((payingUsers / totalUsers) * 1000) / 10 : 0,
+    trackingLive: true,
+  };
+
+  const weekAgoIso = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+  const active7d = db.prepare(
+    'SELECT COUNT(DISTINCT user_id) as count FROM usage WHERE created_at >= ?'
+  ).get(weekAgoIso).count;
+  const activity = { active7d, inactive: Math.max(0, totalUsers - active7d), totalUsers };
+
+  res.json({
+    totalUsers,
+    dailyActiveUsers,
+    avgUsesPerActiveUser,
+    signupsPerDay,
+    usagePerDay,
+    featureUsage,
+    topSearches,
+    users,
+    apiUsage,
+    recentErrors,
+    subscriptionStats,
+    activity,
+  });
+});
+
+// One user's full detail - the account-management drill-down from the
+// admin user list. Recent usage history included so a specific user's
+// searches/scans can actually be inspected, not just their totals.
+app.get('/api/admin/user/:id', requireAuth, requireAdmin, (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: 'invalid_id' });
+
+  const user = db.prepare('SELECT id, email, plan, created_at, trial_ends_at, referral_code FROM users WHERE id = ?').get(id);
+  if (!user) return res.status(404).json({ error: 'not_found' });
+
+  const recentUsage = db.prepare(`
+    SELECT feature, detail, created_at
+    FROM usage
+    WHERE user_id = ?
+    ORDER BY created_at DESC
+    LIMIT 50
+  `).all(id);
+
+  const usageByFeature = {};
+  VALID_FEATURES.forEach((f) => { usageByFeature[f] = 0; });
+  db.prepare('SELECT feature, COUNT(*) as count FROM usage WHERE user_id = ? GROUP BY feature').all(id)
+    .forEach((r) => { usageByFeature[r.feature] = r.count; });
+
+  res.json({ user, usageByFeature, recentUsage });
 });
 
 // ===== PSA CERT LOOKUP =====
@@ -395,10 +533,12 @@ app.get('/api/psa-cert/:cert', async (req, res) => {
     const response = await fetch(`${PSA_API_BASE}/cert/GetByCertNumber/${cert}`, {
       headers: { Authorization: `Bearer ${token}` },
     });
+    logApiCall('psa', response.ok);
 
     if (!response.ok) {
       const body = await response.text().catch(() => '');
       console.error(`PSA cert lookup failed: ${response.status} - ${body}`);
+      logError('psa_cert_lookup', `HTTP ${response.status}`, body);
       const code = (response.status === 401 || response.status === 403) ? 'invalid_psa_token' : 'psa_unavailable';
       return res.json({ error: code });
     }
@@ -434,6 +574,7 @@ app.get('/api/psa-cert/:cert', async (req, res) => {
     res.json({ card });
   } catch (err) {
     console.error('PSA cert lookup errored:', err.message);
+    logError('psa_cert_lookup', err.message);
     res.json({ error: 'psa_unavailable' });
   }
 });
@@ -569,6 +710,7 @@ async function fetchCardSightPricing(query) {
     }));
 
     const response = await fetch(url, { headers: requestHeaders });
+    logApiCall('cardsight', response.ok);
 
     // Evidence for whether a redirect silently dropped the Authorization
     // header en route (fetch strips it on cross-origin redirects) instead
@@ -581,6 +723,7 @@ async function fetchCardSightPricing(query) {
     if (!response.ok) {
       const body = await response.text().catch(() => '');
       console.error(`CardSight pricing lookup failed: ${response.status} - ${body} (redirected: ${response.redirected}, final url: ${response.url})`);
+      logError('cardsight_pricing', `HTTP ${response.status} for "${query}"`, body);
       return { ok: false, reason: response.status === 401 || response.status === 403 ? 'invalid_key' : 'unavailable' };
     }
 
@@ -603,6 +746,7 @@ async function fetchCardSightPricing(query) {
     return { ok: true, pricing: normalizeCardSightPricing(data) };
   } catch (err) {
     console.error('CardSight pricing lookup errored:', err.message);
+    logError('cardsight_pricing', err.message, `query: "${query}"`);
     return { ok: false, reason: 'unavailable' };
   }
 }
@@ -772,6 +916,7 @@ app.get('/api/price', async (req, res) => {
     });
   } catch (err) {
     console.error('eBay price lookup failed:', err.message);
+    logError('price_lookup', err.message, `query: "${query}"`);
     res.json({ error: err.code || 'ebay_unavailable' });
   }
 });

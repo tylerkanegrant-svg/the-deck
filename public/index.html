@@ -406,10 +406,24 @@ function handlePhoto(side,input){
   reader.readAsDataURL(input.files[0]);
 }
 
-function doGrade(){
-  var fi=document.getElementById('frontPhotoInput');
+async function doGrade(){
+  var fi=document.getElementById('frontF');
   if(!fi||!fi.files||!fi.files[0]){alert('Please upload a front photo first.');return;}
-  var btn=document.getElementById('aBtn');btn.disabled=true;btn.textContent='Analyzing...';
+  var btn=document.getElementById('aBtn');btn.disabled=true;btn.textContent='Checking...';
+  var usage=await checkFeatureUsage('grading', document.getElementById('gradingCardName')?document.getElementById('gradingCardName').value:'');
+  if(!usage.allowed){
+    btn.disabled=false;btn.textContent='Analyze Card';
+    var ge=document.getElementById('gEmpty');
+    if(ge){
+      ge.style.display='block';
+      ge.innerHTML='<div style="font-size:48px;opacity:0.5;margin-bottom:12px">&#128274;</div>'
+        +'<div style="font-size:13px;font-weight:700;color:var(--gold);margin-bottom:8px">Weekly Free Limit Reached</div>'
+        +'<div style="font-size:11px;color:var(--gray-lt);line-height:1.6;max-width:280px;margin:0 auto">'+limitReachedMessage(usage)+'</div>';
+    }
+    document.getElementById('gResult').style.display='none';
+    return;
+  }
+  btn.textContent='Analyzing...';
   document.getElementById('gbar').style.display='block';
   document.getElementById('gEmpty').style.display='none';
   document.getElementById('gResult').style.display='none';
@@ -2341,8 +2355,15 @@ async function fetchPrices(q){
 
 async function doSearch(){
   var q=document.getElementById("cardQ").value.trim();if(!q)return;
+  var sBtn=document.getElementById("sBtn");
+  sBtn.disabled=true;sBtn.textContent="...";
+  var usage=await checkFeatureUsage('valuing', q);
+  if(!usage.allowed){
+    sBtn.disabled=false;sBtn.textContent="Search";
+    renderLimitReached(usage);
+    return;
+  }
   saveRecentSearch(q);
-  document.getElementById("sBtn").disabled=true;document.getElementById("sBtn").textContent="...";
   document.getElementById("sEmpty").style.display="none";document.getElementById("sResult").style.display="none";
   document.getElementById("pbar").style.display="block";
   try{
@@ -2409,6 +2430,14 @@ function renderError(q,data){
     +'<div style="font-size:14px;font-weight:700;margin-bottom:6px">Couldn\u2019t load live prices</div>'
     +'<div style="font-size:12px;color:var(--gray-lt);line-height:1.6;margin-bottom:16px">'+reason+'</div>'
     +'<button onclick="doSearch()" style="background:var(--gold);color:#000;border:none;padding:11px 20px;border-radius:8px;font-family:DM Sans,sans-serif;font-size:12px;font-weight:800;cursor:pointer">Try Again</button>'
+    +'</div>';
+  document.getElementById("sResult").style.display="block";
+}
+function renderLimitReached(usage){
+  document.getElementById("sResult").innerHTML='<div style="background:var(--s1);border:1px solid rgba(201,168,76,0.3);border-radius:12px;padding:32px 20px;text-align:center">'
+    +'<div style="font-size:36px;opacity:0.5;margin-bottom:10px">&#128274;</div>'
+    +'<div style="font-size:14px;font-weight:700;margin-bottom:6px;color:var(--gold)">Weekly Free Limit Reached</div>'
+    +'<div style="font-size:12px;color:var(--gray-lt);line-height:1.6">'+limitReachedMessage(usage)+'</div>'
     +'</div>';
   document.getElementById("sResult").style.display="block";
 }
@@ -3029,6 +3058,61 @@ async function restoreSession(){
   }
 }
 var _sessionReady = restoreSession();
+
+// ===== FEATURE USAGE LIMITS =====
+// Free-plan accounts (or an expired trial) get FREE_WEEKLY_LIMIT combined
+// grading+valuing uses per rolling 7 days - the server is the source of
+// truth for the count (see POST /api/use in server.js), this just calls
+// that check before actually running the feature and surfaces a clear
+// message when it says no, instead of a silent failure or a confusing
+// generic error.
+async function checkFeatureUsage(feature, detail){
+  var token=getToken();
+  if(!token){
+    // Shouldn't normally happen (the whole app sits behind the sign-in
+    // screen), but fail safe: send them to sign in rather than letting
+    // an unmetered request through.
+    var screen=document.getElementById('authScreen');
+    if(screen)screen.style.display='flex';
+    return {allowed:false, reason:'not_signed_in'};
+  }
+  try{
+    var res=await fetch('/api/use',{
+      method:'POST',
+      headers:{'Content-Type':'application/json',Authorization:'Bearer '+token},
+      body:JSON.stringify({feature:feature, detail:(detail||'').slice(0,200)})
+    });
+    if(res.status===401){
+      clearToken();_user=null;
+      var screen2=document.getElementById('authScreen');
+      if(screen2)screen2.style.display='flex';
+      return {allowed:false, reason:'not_signed_in'};
+    }
+    return await res.json();
+  }catch(e){
+    // Network hiccup checking the limit - don't block a real request over
+    // a transient error; the check itself failing isn't the same as the
+    // server actually saying no.
+    console.warn('Could not check usage limit:', e.message);
+    return {allowed:true, remaining:null};
+  }
+}
+
+function limitReachedMessage(usage){
+  if(usage.reason==='feature_not_on_free_plan'){
+    return "This feature isn't available on the free plan.";
+  }
+  if(usage.reason==='not_signed_in'){
+    return 'Please sign in to continue.';
+  }
+  var msg="You've hit your free weekly limit of "+(usage.limit||10)+' card look-ups (grading + pricing combined).';
+  if(usage.resetsAt){
+    var d=new Date(usage.resetsAt);
+    msg+=' It resets '+d.toLocaleDateString('en-US',{month:'short',day:'numeric'})+'.';
+  }
+  msg+=' Upgrade to Pro for unlimited use.';
+  return msg;
+}
 
 function switchAuthTab(tab){
   var si=document.getElementById('authSignIn');

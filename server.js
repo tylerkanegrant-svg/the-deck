@@ -95,6 +95,10 @@ function requireAdmin(req, res, next) {
 // 'pro' -> unlimited. 'trial' -> unlimited until trial_ends_at passes.
 // Everything else (including an expired trial) is treated as 'free'.
 function effectivePlan(user) {
+  // The one account this app is run by never gets capped, no matter what
+  // its stored plan/trial say - unlimited usage regardless of the free
+  // plan's weekly limit.
+  if (user.email === ADMIN_EMAIL) return 'pro';
   if (user.plan === 'pro') return 'pro';
   if (user.plan === 'trial' && user.trial_ends_at && new Date(user.trial_ends_at) > new Date()) {
     return 'trial';
@@ -327,7 +331,7 @@ app.post('/api/use', requireAuth, (req, res) => {
   // Free plan (or an expired trial): only grading/valuing, capped
   // combined at FREE_WEEKLY_LIMIT uses per rolling 7 days, no auction.
   if (!FREE_ALLOWED_FEATURES.includes(feature)) {
-    return res.json({ allowed: false, remaining: 0 });
+    return res.json({ allowed: false, remaining: 0, reason: 'feature_not_on_free_plan' });
   }
 
   const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
@@ -339,7 +343,17 @@ app.post('/api/use', requireAuth, (req, res) => {
 
   const remainingBefore = Math.max(0, FREE_WEEKLY_LIMIT - usedRow.count);
   if (remainingBefore <= 0) {
-    return res.json({ allowed: false, remaining: 0 });
+    // The oldest of this week's counted uses is the one that "ages out"
+    // first - once it's 7 days old there's room for one more, so that's
+    // the honest answer to "when can I use this again."
+    const oldest = db.prepare(`
+      SELECT MIN(created_at) as oldest FROM usage
+      WHERE user_id = ? AND feature IN (${placeholders}) AND created_at >= ?
+    `).get(user.id, ...FREE_ALLOWED_FEATURES, weekAgo);
+    const resetsAt = oldest.oldest
+      ? new Date(new Date(oldest.oldest).getTime() + 7 * 24 * 60 * 60 * 1000).toISOString()
+      : null;
+    return res.json({ allowed: false, remaining: 0, reason: 'weekly_limit_reached', limit: FREE_WEEKLY_LIMIT, resetsAt });
   }
 
   db.prepare('INSERT INTO usage (user_id, feature, detail, created_at) VALUES (?, ?, ?, ?)')

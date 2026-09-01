@@ -667,10 +667,14 @@ function normalizeCardSightPricing(data) {
     });
   });
 
+  // No cap here - CardSight's own request already limits how many
+  // listings exist to work with (see the `limit` param below), and the
+  // whole point of this section is showing as much real sold data as
+  // actually exists rather than an artificially thin slice of it.
   soldListings.sort((a, b) => (a._sortDate < b._sortDate ? 1 : -1));
-  const recentSoldListings = soldListings.slice(0, 10).map(({ _sortDate, ...rest }) => rest);
+  const allSoldListings = soldListings.map(({ _sortDate, ...rest }) => rest);
 
-  return { raw, graded, soldListings: recentSoldListings };
+  return { raw, graded, soldListings: allSoldListings };
 }
 
 async function fetchCardSightPricing(query) {

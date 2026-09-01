@@ -2598,39 +2598,18 @@ function toggleSaleChart(idx){
 
 function renderPrice(p){
   var chg=function(v){if(!v)return"";return"<span class='"+(v[0]==="+"?"up":"dn")+"'>"+v+" 30d</span>";};
-  // Sold Listings (from CardSight) is now the prominent listings section -
-  // real completed sales, green SOLD theme matching the grade boxes.
-  var soldListingsHtml='';
-  if(p.soldListings&&p.soldListings.length){
-    var soldCards=p.soldListings.map(function(x){
-      var thumb=x.image
-        ?"<div style='width:56px;height:74px;border-radius:8px;overflow:hidden;flex-shrink:0;background:var(--s2);border:1px solid var(--border)'><img src='"+x.image+"' style='width:100%;height:100%;object-fit:cover' loading='lazy'></div>"
-        :"";
-      var viewBtn=x.url
-        ?"<button onclick=\"window.open('"+x.url.replace(/'/g,'')+"','_blank')\" style='margin-top:8px;background:rgba(46,204,113,0.08);border:1px solid rgba(46,204,113,0.3);color:#2ecc71;font-family:DM Sans,sans-serif;font-size:10px;font-weight:700;padding:6px 12px;border-radius:6px;cursor:pointer'>View Listing &#8599;</button>"
-        :"";
-      var soldTag="<span style='font-size:8px;color:#2ecc71;font-weight:700;letter-spacing:0.04em;background:rgba(46,204,113,0.12);border:1px solid rgba(46,204,113,0.35);padding:2px 5px;border-radius:4px;vertical-align:middle;margin-left:8px'>SOLD</span>";
-      return "<div style='background:var(--s1);border:1px solid var(--border);border-left:3px solid rgba(46,204,113,0.5);border-radius:10px;padding:14px 16px'>"
-        +"<div style='display:flex;gap:12px;align-items:flex-start'>"
-        +thumb
-        +"<div style='flex:1;min-width:0'>"
-        +"<div style='display:flex;align-items:center;gap:8px;margin-bottom:6px'>"+gpH(x.grade)+"</div>"
-        +(x.title?"<div style='font-size:11px;color:var(--gray-lt);margin-bottom:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap'>"+x.title+"</div>":"")
-        +"<div style='font-family:Bebas Neue,sans-serif;font-size:26px;color:#2ecc71;line-height:1;margin-bottom:4px'>"+x.price+soldTag+"</div>"
-        +"<div style='font-size:11px;color:var(--gray)'>"+(x.date?'Sold: '+x.date:'')+"</div>"
-        +viewBtn
-        +"</div>"
-        +"</div>"
-        +"</div>";
-    }).join("");
-    soldListingsHtml="<div style='display:flex;flex-direction:column;gap:8px;padding:14px 16px'><div><div style='font-size:9px;font-family:DM Mono,monospace;color:#2ecc71;letter-spacing:0.12em;text-transform:uppercase'>&#10003; Sold Listings (Real Sales)</div><div style='font-size:9px;color:var(--gray);font-family:DM Mono,monospace;margin-top:2px;font-style:italic'>Confirmed completed sales - not asking prices</div></div>"+soldCards+"</div>";
-  }
+
   // 130-point style sale cards - tap to see comparable sales bar graph.
   // _lastSales keeps the FULL set (the price graph below uses all of it);
-  // only the visible card count is capped, since eBay listings are now a
-  // minimal compliance footnote rather than the primary listings display.
+  // only the visible card count is capped, since eBay listings are still
+  // a minimal compliance footnote rather than the primary listings display.
   _lastSales=p.recentSales||[];
-  var sales=_lastSales.slice(0,2).map(function(x,i){
+
+  // Shared card renderer for a live/asking eBay listing - orange left
+  // border, ASKING tag. Used both for the compliance-minimal eBay
+  // Listings footnote AND as the Sold Listings fallback below, so a
+  // fallback listing reads as "not sold" wherever it shows up on the page.
+  function askingCardHtml(x){
     var listType=x.type?(x.type+(x.bids?' \u2022 '+x.bids+' bids':'')):(x.platform||'');
     var thumb=x.image
       ?"<div style='width:56px;height:74px;border-radius:8px;overflow:hidden;flex-shrink:0;background:var(--s2);border:1px solid var(--border)'><img src='"+x.image+"' style='width:100%;height:100%;object-fit:cover' loading='lazy'></div>"
@@ -2652,13 +2631,54 @@ function renderPrice(p){
       +"</div>"
       +"</div>"
       +"</div>";
-  }).join("");
+  }
+
+  // Sold Listings (from CardSight) - real completed sales, green SOLD
+  // theme, no left-border accent (that's reserved for live/asking cards
+  // so a borderless card always reads as a real confirmed sale). Falls
+  // back to a couple of live eBay listings - same orange "not sold"
+  // styling used everywhere else - when CardSight has no sold data at
+  // all for this card, so the section is never just left blank.
+  var soldListingsHtml='';
+  var usedFallbackForSold=false;
+  if(p.soldListings&&p.soldListings.length){
+    var soldCards=p.soldListings.map(function(x){
+      var thumb=x.image
+        ?"<div style='width:56px;height:74px;border-radius:8px;overflow:hidden;flex-shrink:0;background:var(--s2);border:1px solid var(--border)'><img src='"+x.image+"' style='width:100%;height:100%;object-fit:cover' loading='lazy'></div>"
+        :"";
+      var viewBtn=x.url
+        ?"<button onclick=\"window.open('"+x.url.replace(/'/g,'')+"','_blank')\" style='margin-top:8px;background:rgba(46,204,113,0.08);border:1px solid rgba(46,204,113,0.3);color:#2ecc71;font-family:DM Sans,sans-serif;font-size:10px;font-weight:700;padding:6px 12px;border-radius:6px;cursor:pointer'>View Listing &#8599;</button>"
+        :"";
+      var soldTag="<span style='font-size:8px;color:#2ecc71;font-weight:700;letter-spacing:0.04em;background:rgba(46,204,113,0.12);border:1px solid rgba(46,204,113,0.35);padding:2px 5px;border-radius:4px;vertical-align:middle;margin-left:8px'>SOLD</span>";
+      return "<div style='background:var(--s1);border:1px solid var(--border);border-radius:10px;padding:14px 16px'>"
+        +"<div style='display:flex;gap:12px;align-items:flex-start'>"
+        +thumb
+        +"<div style='flex:1;min-width:0'>"
+        +"<div style='display:flex;align-items:center;gap:8px;margin-bottom:6px'>"+gpH(x.grade)+"</div>"
+        +(x.title?"<div style='font-size:11px;color:var(--gray-lt);margin-bottom:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap'>"+x.title+"</div>":"")
+        +"<div style='font-family:Bebas Neue,sans-serif;font-size:26px;color:#2ecc71;line-height:1;margin-bottom:4px'>"+x.price+soldTag+"</div>"
+        +"<div style='font-size:11px;color:var(--gray)'>"+(x.date?'Sold: '+x.date:'')+"</div>"
+        +viewBtn
+        +"</div>"
+        +"</div>"
+        +"</div>";
+    }).join("");
+    soldListingsHtml="<div style='display:flex;flex-direction:column;gap:8px;padding:14px 16px'><div><div style='font-size:9px;font-family:DM Mono,monospace;color:#2ecc71;letter-spacing:0.12em;text-transform:uppercase'>&#10003; Sold Listings (Real Sales)</div><div style='font-size:9px;color:var(--gray);font-family:DM Mono,monospace;margin-top:2px;font-style:italic'>Confirmed completed sales - not asking prices</div></div>"+soldCards+"</div>";
+  } else if(p.isLive&&_lastSales.length){
+    usedFallbackForSold=true;
+    var fallbackCards=_lastSales.slice(0,2).map(askingCardHtml).join("");
+    soldListingsHtml="<div style='display:flex;flex-direction:column;gap:8px;padding:14px 16px'><div><div style='font-size:9px;font-family:DM Mono,monospace;color:#f39c12;letter-spacing:0.12em;text-transform:uppercase'>No Confirmed Sales Yet</div><div style='font-size:9px;color:var(--gray);font-family:DM Mono,monospace;margin-top:2px;font-style:italic'>Showing live eBay listings instead - asking price, not sold</div></div>"+fallbackCards+"</div>";
+  }
+
   // Kept minimal and de-emphasized on purpose (2 listings, smaller
   // heading) rather than removed outright - eBay's requirements page
   // states partner apps must include certain data elements and UX
   // requirements for a "browse" experience using their data, and this is
   // the smallest version of that we could confirm without risking losing
-  // eBay API access entirely.
+  // eBay API access entirely. Skipped when the Sold Listings fallback
+  // above already shows these same eBay listings, so the same 2 items
+  // never appear twice on one page.
+  var sales=usedFallbackForSold?"":_lastSales.slice(0,2).map(askingCardHtml).join("");
   var salesHeaderNote=p.isLive?"<div style='font-size:8px;color:var(--gray);font-family:DM Mono,monospace;margin-top:2px;font-style:italic'>Asking prices, not confirmed sales</div>":"";
   sales=sales?"<div style='display:flex;flex-direction:column;gap:6px;padding:10px 16px;border-top:1px solid var(--border)'><div><div style='font-size:8px;font-family:DM Mono,monospace;color:var(--gray);letter-spacing:0.1em;text-transform:uppercase'>"+(p.isLive?"eBay Listings":"Recent Sales")+"</div>"+salesHeaderNote+"</div>"+sales+"</div>":"";
   // Live results: each box prefers a real CardSight SOLD price (source

@@ -4,7 +4,13 @@
 const Database = require('better-sqlite3');
 const crypto = require('crypto');
 
-const db = new Database('data.db');
+// Defaults to a file in the working directory, same as before - but on a
+// host like Render, that directory is wiped on every redeploy unless it's
+// a mounted persistent disk. Set DATA_DB_PATH to point at that disk's
+// mount path (e.g. /data/data.db) once one is attached, so real accounts
+// (including admin@thedeck.com) survive deploys instead of quietly
+// disappearing and making a correct password look "wrong."
+const db = new Database(process.env.DATA_DB_PATH || 'data.db');
 db.pragma('journal_mode = WAL');
 
 db.exec(`

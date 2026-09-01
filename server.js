@@ -711,7 +711,11 @@ async function fetchCardSightPricing(query) {
     // getting a misleading "API key is required" 401.
     const searchUrl = new URL(`${CARDSIGHT_API_BASE}/pricing/search`);
     searchUrl.searchParams.set('q', query);
-    searchUrl.searchParams.set('period', '90d');
+    // No `period` param - CardSight's own docs say the default is "all"
+    // (no time limit). An earlier version of this hardcoded period=90d,
+    // which silently cut off any real sold listing older than 90 days -
+    // exactly the kind of thing that makes a card with real sales history
+    // look like it has none. Let CardSight's real default apply instead.
     searchUrl.searchParams.set('listing_type', 'both');
     searchUrl.searchParams.set('limit', '50');
     const url = searchUrl.toString();

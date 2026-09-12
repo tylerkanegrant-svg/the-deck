@@ -4,7 +4,7 @@ const cors = require('cors');
 const crypto = require('crypto');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
-const { db, uniqueReferralCode } = require('./db');
+const { dbGet, dbAll, dbRun, uniqueReferralCode, ready: dbReady } = require('./db');
 
 const app = express();
 const PORT = 3001;
@@ -43,10 +43,10 @@ const API_LIMITS = {
 // Records a real outbound call to an external API, so the admin dashboard
 // can show usage against that provider's free-tier limit. Never throws -
 // a logging failure should never take down the request that triggered it.
-function logApiCall(provider, success) {
+async function logApiCall(provider, success) {
   try {
-    db.prepare('INSERT INTO api_calls (provider, success, created_at) VALUES (?, ?, ?)')
-      .run(provider, success ? 1 : 0, new Date().toISOString());
+    await dbRun('INSERT INTO api_calls (provider, success, created_at) VALUES (?, ?, ?)',
+      [provider, success ? 1 : 0, new Date().toISOString()]);
   } catch (err) {
     console.error('logApiCall failed:', err.message);
   }
@@ -55,10 +55,10 @@ function logApiCall(provider, success) {
 // Persists a real failure so the admin dashboard can show it, instead of it
 // only ever existing in server console logs nobody's watching. Never
 // throws - called from inside catch blocks, so it must not itself fail.
-function logError(context, message, detail) {
+async function logError(context, message, detail) {
   try {
-    db.prepare('INSERT INTO errors (context, message, detail, created_at) VALUES (?, ?, ?, ?)')
-      .run(context, String(message).slice(0, 500), detail ? String(detail).slice(0, 1000) : null, new Date().toISOString());
+    await dbRun('INSERT INTO errors (context, message, detail, created_at) VALUES (?, ?, ?, ?)',
+      [context, String(message).slice(0, 500), detail ? String(detail).slice(0, 1000) : null, new Date().toISOString()]);
   } catch (err) {
     console.error('logError failed:', err.message);
   }
@@ -243,7 +243,7 @@ app.post('/api/signup', async (req, res) => {
   }
 
   const normalizedEmail = email.trim().toLowerCase();
-  const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(normalizedEmail);
+  const existing = await dbGet('SELECT id FROM users WHERE email = ?', [normalizedEmail]);
   if (existing) {
     return res.status(409).json({ error: 'email_taken' });
   }
@@ -252,19 +252,19 @@ app.post('/api/signup', async (req, res) => {
   // new user. An unknown/missing ref code is fine - just no referrer.
   let referredBy = null;
   if (ref) {
-    const referrer = db.prepare('SELECT id FROM users WHERE referral_code = ?').get(ref);
+    const referrer = await dbGet('SELECT id FROM users WHERE referral_code = ?', [ref]);
     if (referrer) referredBy = referrer.id;
   }
 
   const passwordHash = await bcrypt.hash(password, 10);
   const now = new Date();
   const trialEndsAt = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
-  const referralCode = uniqueReferralCode();
+  const referralCode = await uniqueReferralCode();
 
-  const info = db.prepare(`
+  const info = await dbRun(`
     INSERT INTO users (email, password_hash, created_at, plan, trial_ends_at, referral_code, referred_by)
     VALUES (?, ?, ?, 'trial', ?, ?, ?)
-  `).run(normalizedEmail, passwordHash, now.toISOString(), trialEndsAt.toISOString(), referralCode, referredBy);
+  `, [normalizedEmail, passwordHash, now.toISOString(), trialEndsAt.toISOString(), referralCode, referredBy]);
 
   const token = signToken({ id: info.lastInsertRowid, email: normalizedEmail });
   res.json({ token });
@@ -275,7 +275,7 @@ app.post('/api/login', async (req, res) => {
   if (!email || !password) return res.status(400).json({ error: 'missing_fields' });
 
   const normalizedEmail = String(email).trim().toLowerCase();
-  const user = db.prepare('SELECT * FROM users WHERE email = ?').get(normalizedEmail);
+  const user = await dbGet('SELECT * FROM users WHERE email = ?', [normalizedEmail]);
   if (!user) return res.status(401).json({ error: 'invalid_credentials' });
 
   const passwordMatches = await bcrypt.compare(password, user.password_hash);
@@ -285,16 +285,16 @@ app.post('/api/login', async (req, res) => {
   res.json({ token });
 });
 
-app.get('/api/me', requireAuth, (req, res) => {
-  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.userId);
+app.get('/api/me', requireAuth, async (req, res) => {
+  const user = await dbGet('SELECT * FROM users WHERE id = ?', [req.userId]);
   if (!user) return res.status(401).json({ error: 'unauthorized' });
 
   const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-  const usageRows = db.prepare(`
+  const usageRows = await dbAll(`
     SELECT feature, COUNT(*) as count FROM usage
     WHERE user_id = ? AND created_at >= ?
     GROUP BY feature
-  `).all(user.id, weekAgo);
+  `, [user.id, weekAgo]);
 
   const weeklyUsage = {};
   VALID_FEATURES.forEach((f) => { weeklyUsage[f] = 0; });
@@ -311,20 +311,20 @@ app.get('/api/me', requireAuth, (req, res) => {
 
 // Checks (and records) whether the logged-in user is allowed to use a
 // feature right now, based on their plan and this week's usage.
-app.post('/api/use', requireAuth, (req, res) => {
+app.post('/api/use', requireAuth, async (req, res) => {
   const { feature, detail } = req.body || {};
   if (!VALID_FEATURES.includes(feature)) {
     return res.status(400).json({ error: 'invalid_feature' });
   }
 
-  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.userId);
+  const user = await dbGet('SELECT * FROM users WHERE id = ?', [req.userId]);
   if (!user) return res.status(401).json({ error: 'unauthorized' });
 
   const plan = effectivePlan(user);
 
   if (plan === 'pro' || plan === 'trial') {
-    db.prepare('INSERT INTO usage (user_id, feature, detail, created_at) VALUES (?, ?, ?, ?)')
-      .run(user.id, feature, detail || null, new Date().toISOString());
+    await dbRun('INSERT INTO usage (user_id, feature, detail, created_at) VALUES (?, ?, ?, ?)',
+      [user.id, feature, detail || null, new Date().toISOString()]);
     return res.json({ allowed: true, remaining: null }); // null = unlimited
   }
 
@@ -336,46 +336,46 @@ app.post('/api/use', requireAuth, (req, res) => {
 
   const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
   const placeholders = FREE_ALLOWED_FEATURES.map(() => '?').join(',');
-  const usedRow = db.prepare(`
+  const usedRow = await dbGet(`
     SELECT COUNT(*) as count FROM usage
     WHERE user_id = ? AND feature IN (${placeholders}) AND created_at >= ?
-  `).get(user.id, ...FREE_ALLOWED_FEATURES, weekAgo);
+  `, [user.id, ...FREE_ALLOWED_FEATURES, weekAgo]);
 
   const remainingBefore = Math.max(0, FREE_WEEKLY_LIMIT - usedRow.count);
   if (remainingBefore <= 0) {
     // The oldest of this week's counted uses is the one that "ages out"
     // first - once it's 7 days old there's room for one more, so that's
     // the honest answer to "when can I use this again."
-    const oldest = db.prepare(`
+    const oldest = await dbGet(`
       SELECT MIN(created_at) as oldest FROM usage
       WHERE user_id = ? AND feature IN (${placeholders}) AND created_at >= ?
-    `).get(user.id, ...FREE_ALLOWED_FEATURES, weekAgo);
+    `, [user.id, ...FREE_ALLOWED_FEATURES, weekAgo]);
     const resetsAt = oldest.oldest
       ? new Date(new Date(oldest.oldest).getTime() + 7 * 24 * 60 * 60 * 1000).toISOString()
       : null;
     return res.json({ allowed: false, remaining: 0, reason: 'weekly_limit_reached', limit: FREE_WEEKLY_LIMIT, resetsAt });
   }
 
-  db.prepare('INSERT INTO usage (user_id, feature, detail, created_at) VALUES (?, ?, ?, ?)')
-    .run(user.id, feature, detail || null, new Date().toISOString());
+  await dbRun('INSERT INTO usage (user_id, feature, detail, created_at) VALUES (?, ?, ?, ?)',
+    [user.id, feature, detail || null, new Date().toISOString()]);
 
   res.json({ allowed: true, remaining: remainingBefore - 1 });
 });
 
 // ===== ADMIN DASHBOARD =====
 
-app.get('/api/admin/stats', requireAuth, requireAdmin, (req, res) => {
-  const totalUsers = db.prepare('SELECT COUNT(*) as count FROM users').get().count;
+app.get('/api/admin/stats', requireAuth, requireAdmin, async (req, res) => {
+  const totalUsers = (await dbGet('SELECT COUNT(*) as count FROM users')).count;
 
   const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-  const dailyActiveUsers = db.prepare(
-    'SELECT COUNT(DISTINCT user_id) as count FROM usage WHERE created_at >= ?'
-  ).get(dayAgo).count;
+  const dailyActiveUsers = (await dbGet(
+    'SELECT COUNT(DISTINCT user_id) as count FROM usage WHERE created_at >= ?', [dayAgo]
+  )).count;
 
   // "Active user" here = anyone with at least one usage row, ever (not
   // just the last 24h) - average uses per active user, all-time.
-  const totalUsageRows = db.prepare('SELECT COUNT(*) as count FROM usage').get().count;
-  const activeUserCount = db.prepare('SELECT COUNT(DISTINCT user_id) as count FROM usage').get().count;
+  const totalUsageRows = (await dbGet('SELECT COUNT(*) as count FROM usage')).count;
+  const activeUserCount = (await dbGet('SELECT COUNT(DISTINCT user_id) as count FROM usage')).count;
   const avgUsesPerActiveUser = activeUserCount > 0
     ? Math.round((totalUsageRows / activeUserCount) * 10) / 10
     : 0;
@@ -383,12 +383,12 @@ app.get('/api/admin/stats', requireAuth, requireAdmin, (req, res) => {
   // Signups for each of the last 30 days, zero-filled so there are no
   // gaps for the admin page's chart to deal with.
   const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
-  const signupRows = db.prepare(`
+  const signupRows = await dbAll(`
     SELECT substr(created_at, 1, 10) as day, COUNT(*) as count
     FROM users
     WHERE created_at >= ?
     GROUP BY day
-  `).all(thirtyDaysAgo);
+  `, [thirtyDaysAgo]);
   const signupsByDay = {};
   signupRows.forEach((r) => { signupsByDay[r.day] = r.count; });
   const signupsPerDay = [];
@@ -397,21 +397,21 @@ app.get('/api/admin/stats', requireAuth, requireAdmin, (req, res) => {
     signupsPerDay.push({ date: day, count: signupsByDay[day] || 0 });
   }
 
-  const featureRows = db.prepare('SELECT feature, COUNT(*) as count FROM usage GROUP BY feature').all();
+  const featureRows = await dbAll('SELECT feature, COUNT(*) as count FROM usage GROUP BY feature');
   const featureUsage = {};
   VALID_FEATURES.forEach((f) => { featureUsage[f] = 0; });
   featureRows.forEach((r) => { featureUsage[r.feature] = r.count; });
 
-  const topSearches = db.prepare(`
+  const topSearches = await dbAll(`
     SELECT detail as term, COUNT(*) as count
     FROM usage
     WHERE feature = 'search' AND detail IS NOT NULL AND detail != ''
     GROUP BY detail
     ORDER BY count DESC
     LIMIT 20
-  `).all();
+  `);
 
-  const users = db.prepare(`
+  const users = await dbAll(`
     SELECT
       u.id,
       u.email,
@@ -421,17 +421,17 @@ app.get('/api/admin/stats', requireAuth, requireAdmin, (req, res) => {
       (SELECT MAX(created_at) FROM usage WHERE user_id = u.id) as last_active
     FROM users u
     ORDER BY u.created_at DESC
-  `).all();
+  `);
 
   // Usage (searches/scans) per day, last 30 days - same zero-filled shape
   // as signupsPerDay above, so the admin page can chart activity trends,
   // not just signups.
-  const usageRows = db.prepare(`
+  const usageRows = await dbAll(`
     SELECT substr(created_at, 1, 10) as day, COUNT(*) as count
     FROM usage
     WHERE created_at >= ?
     GROUP BY day
-  `).all(thirtyDaysAgo);
+  `, [thirtyDaysAgo]);
   const usageByDay = {};
   usageRows.forEach((r) => { usageByDay[r.day] = r.count; });
   const usagePerDay = [];
@@ -444,12 +444,13 @@ app.get('/api/admin/stats', requireAuth, requireAdmin, (req, res) => {
   // against that provider's free-tier limit - so we can see we're getting
   // close BEFORE we get cut off, not after.
   const apiUsage = {};
-  Object.keys(API_LIMITS).forEach((provider) => {
+  for (const provider of Object.keys(API_LIMITS)) {
     const cfg = API_LIMITS[provider];
     const windowStart = new Date(Date.now() - cfg.windowHours * 60 * 60 * 1000).toISOString();
-    const row = db.prepare(
-      'SELECT COUNT(*) as count, SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) as failures FROM api_calls WHERE provider = ? AND created_at >= ?'
-    ).get(provider, windowStart);
+    const row = await dbGet(
+      'SELECT COUNT(*) as count, SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) as failures FROM api_calls WHERE provider = ? AND created_at >= ?',
+      [provider, windowStart]
+    );
     apiUsage[provider] = {
       count: row.count,
       failures: row.failures || 0,
@@ -457,16 +458,16 @@ app.get('/api/admin/stats', requireAuth, requireAdmin, (req, res) => {
       label: cfg.label,
       percent: cfg.limit > 0 ? Math.round((row.count / cfg.limit) * 1000) / 10 : 0,
     };
-  });
+  }
 
-  const recentErrors = db.prepare(`
+  const recentErrors = await dbAll(`
     SELECT context, message, detail, created_at
     FROM errors
     ORDER BY created_at DESC
     LIMIT 20
-  `).all();
+  `);
 
-  const payingUsers = db.prepare("SELECT COUNT(*) as count FROM users WHERE plan = 'pro'").get().count;
+  const payingUsers = (await dbGet("SELECT COUNT(*) as count FROM users WHERE plan = 'pro'")).count;
   const subscriptionStats = {
     payingUsers,
     totalUsers,
@@ -478,9 +479,9 @@ app.get('/api/admin/stats', requireAuth, requireAdmin, (req, res) => {
   };
 
   const weekAgoIso = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-  const active7d = db.prepare(
-    'SELECT COUNT(DISTINCT user_id) as count FROM usage WHERE created_at >= ?'
-  ).get(weekAgoIso).count;
+  const active7d = (await dbGet(
+    'SELECT COUNT(DISTINCT user_id) as count FROM usage WHERE created_at >= ?', [weekAgoIso]
+  )).count;
   const activity = { active7d, inactive: Math.max(0, totalUsers - active7d), totalUsers };
 
   res.json({
@@ -502,24 +503,24 @@ app.get('/api/admin/stats', requireAuth, requireAdmin, (req, res) => {
 // One user's full detail - the account-management drill-down from the
 // admin user list. Recent usage history included so a specific user's
 // searches/scans can actually be inspected, not just their totals.
-app.get('/api/admin/user/:id', requireAuth, requireAdmin, (req, res) => {
+app.get('/api/admin/user/:id', requireAuth, requireAdmin, async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id)) return res.status(400).json({ error: 'invalid_id' });
 
-  const user = db.prepare('SELECT id, email, plan, created_at, trial_ends_at, referral_code FROM users WHERE id = ?').get(id);
+  const user = await dbGet('SELECT id, email, plan, created_at, trial_ends_at, referral_code FROM users WHERE id = ?', [id]);
   if (!user) return res.status(404).json({ error: 'not_found' });
 
-  const recentUsage = db.prepare(`
+  const recentUsage = await dbAll(`
     SELECT feature, detail, created_at
     FROM usage
     WHERE user_id = ?
     ORDER BY created_at DESC
     LIMIT 50
-  `).all(id);
+  `, [id]);
 
   const usageByFeature = {};
   VALID_FEATURES.forEach((f) => { usageByFeature[f] = 0; });
-  db.prepare('SELECT feature, COUNT(*) as count FROM usage WHERE user_id = ? GROUP BY feature').all(id)
+  (await dbAll('SELECT feature, COUNT(*) as count FROM usage WHERE user_id = ? GROUP BY feature', [id]))
     .forEach((r) => { usageByFeature[r.feature] = r.count; });
 
   res.json({ user, usageByFeature, recentUsage });
@@ -943,6 +944,14 @@ app.get('/api/price', async (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`The Deck backend running on http://localhost:${PORT}`);
+// Table creation is async now (see db.js) - wait for it before accepting
+// any requests, so the very first request can't race a not-yet-created
+// table.
+dbReady.then(() => {
+  app.listen(PORT, () => {
+    console.log(`The Deck backend running on http://localhost:${PORT}`);
+  });
+}).catch((err) => {
+  console.error('Could not start: database setup failed.', err.message);
+  process.exit(1);
 });
